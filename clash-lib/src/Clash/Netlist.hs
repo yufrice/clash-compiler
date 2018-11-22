@@ -189,7 +189,7 @@ genComponent compName = do
   case compExprM of
     Nothing -> do
       (_,sp) <- Lens.use curCompNm
-      throw (ClashException sp ($(curLoc) ++ "No normalized expression found for: " ++ show compName) Nothing)
+      throw (ClashException sp ($(curLoc) ++ "No normalized expression found for: " ++ show compName))
     Just (_,_,_,expr_) -> do
       makeCachedU compName components $ genComponentT compName expr_
 
@@ -227,7 +227,7 @@ genComponentT compName componentExpr = do
         let varType'   = fromMaybe (varType res) topEntityTypeM'
         mkUniqueNormalized topEntMM ((args, binds, res{varType=varType'}))
       Left err ->
-        throw (ClashException sp err Nothing)
+        throw (ClashException sp err)
 
   netDecls <- fmap catMaybes . mapM mkNetDecl $ filter (maybe (const True) (/=) resultM . fst) binders
   decls    <- concat <$> mapM (uncurry mkDeclarations) binders
@@ -320,7 +320,6 @@ mkDeclarations' _ e@(Case _ _ []) = do
                     , "empty list of alternatives not supported:\n\n"
                     , showPpr e
                     ])
-          Nothing
 
 mkDeclarations' bndr (Case scrut altTy alts@(_:_:_)) =
   mkSelection bndr scrut altTy alts
@@ -332,7 +331,7 @@ mkDeclarations' bndr app =
       | null tyArgs -> mkFunApp bndr f args
       | otherwise   -> do
         (_,sp) <- Lens.use curCompNm
-        throw (ClashException sp ($(curLoc) ++ "Not in normal form: Var-application with Type arguments:\n\n" ++ showPpr app) Nothing)
+        throw (ClashException sp ($(curLoc) ++ "Not in normal form: Var-application with Type arguments:\n\n" ++ showPpr app))
     -- Do not generate any assignments writing to a BiSignalOut, as these
     -- do not have any significance in a HDL. The single exception occurs
     -- when writing to a BiSignal using the primitive 'writeToBiSignal'. In
@@ -396,14 +395,14 @@ mkSelection bndr scrut altTy alts = do
         LitPat  (NaturalLiteral n) -> return (Just (NumLit n), altExpr)
         _  -> do
           (_,sp) <- Lens.use curCompNm
-          throw (ClashException sp ($(curLoc) ++ "Not an integer literal in LitPat:\n\n" ++ showPpr pat) Nothing)
+          throw (ClashException sp ($(curLoc) ++ "Not an integer literal in LitPat:\n\n" ++ showPpr pat))
 
     mkScrutExpr :: SrcSpan -> HWType -> Pat -> Expr -> Expr
     mkScrutExpr sp scrutHTy pat scrutE = case pat of
       DataPat dc _ _ -> let modifier = Just (DC (scrutHTy,dcTag dc - 1))
                         in case scrutE of
                             Identifier scrutId Nothing -> Identifier scrutId modifier
-                            _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: Not a variable reference or primitive as subject of a case-statement:\n\n" ++ show scrutE) Nothing)
+                            _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: Not a variable reference or primitive as subject of a case-statement:\n\n" ++ show scrutE))
       _ -> scrutE
 
 -- GHC puts default patterns in the first position, we want them in the
@@ -570,9 +569,9 @@ mkExpr bbEasD bndr ty app = do
     Var f
       | null tmArgs -> return (Identifier (nameOcc $ varName f) Nothing,[])
       | otherwise ->
-        throw (ClashException sp ($(curLoc) ++ "Not in normal form: top-level binder in argument position:\n\n" ++ showPpr app) Nothing)
+        throw (ClashException sp ($(curLoc) ++ "Not in normal form: top-level binder in argument position:\n\n" ++ showPpr app))
     Case scrut ty' [alt] -> mkProjection bbEasD bndr scrut ty' alt
-    _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: application of a Let/Lam/Case:\n\n" ++ showPpr app) Nothing)
+    _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: application of a Let/Lam/Case:\n\n" ++ showPpr app) )
 
 -- | Generate an expression that projects a field out of a data-constructor.
 --
@@ -598,7 +597,7 @@ mkProjection mkDec bndr scrut altTy alt@(pat,v) = do
     (Var n) -> return n
     _ -> throw (ClashException sp ($(curLoc) ++
                 "Not in normal form: RHS of case-projection is not a variable:\n\n"
-                 ++ showPpr e) Nothing)
+                 ++ showPpr e))
   sHwTy <- unsafeCoreTypeToHWTypeM $(curLoc) scrutTy
   vHwTy <- unsafeCoreTypeToHWTypeM $(curLoc) altTy
   (selId,modM,decls) <- do
@@ -622,7 +621,7 @@ mkProjection mkDec bndr scrut altTy alt@(pat,v) = do
           let tmsTys     = map varType tms
               tmsFVs     = concatMap (Lens.toListOf typeFreeVars) tmsTys
               tms'       = if any (`elem` tmsFVs) exts
-                              then throw (ClashException sp ($(curLoc) ++ "Not in normal form: Pattern binds existential variables:\n\n" ++ showPpr e) Nothing)
+                              then throw (ClashException sp ($(curLoc) ++ "Not in normal form: Pattern binds existential variables:\n\n" ++ showPpr e))
                               else tms
           argHWTys <- mapM coreTypeToHWTypeM tmsTys
           let tmsBundled   = zip argHWTys tms'
@@ -635,7 +634,7 @@ mkProjection mkDec bndr scrut altTy alt@(pat,v) = do
                 -- When element and subject have the same HW-type,
                 -- then the projections is just the identity
                 | otherwise      -> pure $ nestModifier modM (Just (DC (Void Nothing,0)))
-        _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: Unexpected pattern in case-projection:\n\n" ++ showPpr e) Nothing)
+        _ -> throw (ClashException sp ($(curLoc) ++ "Not in normal form: Unexpected pattern in case-projection:\n\n" ++ showPpr e))
   let extractExpr = Identifier (maybe altVarId (const selId) modifier) modifier
   case bndr of
     Left scrutNm | mkDec -> do

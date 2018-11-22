@@ -281,7 +281,7 @@ renderElem b (D (Decl n (l:ls))) = do
       return (renderLazy . layoutPretty (LayoutOptions (AvailablePerLine 120 0.4)) . bb)
     else do
       sp <- getSrcSpan
-      throw (ClashException sp ($(curLoc) ++ "\nCan't match context:\n" ++ show b' ++ "\nwith template:\n" ++ show templ) Nothing)
+      throw (ClashException sp ($(curLoc) ++ "\nCan't match context:\n" ++ show b' ++ "\nwith template:\n" ++ show templ))
 
 renderElem b (SigD e m) = do
   e' <- Text.concat <$> mapM (fmap ($ 0) . renderElem b) e

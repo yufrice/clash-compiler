@@ -120,7 +120,7 @@ unsafeCoreTypeToHWType
   -> Type
   -> HWType
 unsafeCoreTypeToHWType sp loc builtInTranslation reprs m keepVoid =
-  either (\msg -> throw (ClashException sp (loc ++ msg) Nothing)) id .
+  either (\msg -> throw (ClashException sp (loc ++ msg))) id .
   coreTypeToHWType builtInTranslation reprs m keepVoid
 
 -- | Converts a Core type to a HWType within the NetlistMonad; errors on failure
@@ -598,7 +598,7 @@ mkUniqueResult subst0 (Just teM) res = do
       hwty = unsafeCoreTypeToHWType sp $(curLoc) typeTrans reprs tcm True ty
       oPortSupply = fmap t_output teM
   when (containsBiSignalIn hwty)
-    (throw (ClashException sp ($(curLoc) ++ "BiSignalIn cannot be part of a function's result. Use 'readFromBiSignal'.") Nothing))
+    (throw (ClashException sp ($(curLoc) ++ "BiSignalIn cannot be part of a function's result. Use 'readFromBiSignal'.")))
   output <- mkOutput oPortSupply (o',hwty)
   case output of
     Just (ports, decls, pN) -> do
@@ -617,7 +617,7 @@ idToInPort var = do
   case portM of
     Just (_,hty) -> do
       when (containsBiSignalIn hty && not (isBiSignalIn hty))
-        (throw (ClashException sp ($(curLoc) ++ "BiSignalIn currently cannot be part of a composite type when it's a function's argument") Nothing))
+        (throw (ClashException sp ($(curLoc) ++ "BiSignalIn currently cannot be part of a composite type when it's a function's argument")))
       return portM
     _ -> return Nothing
 
@@ -630,7 +630,7 @@ idToOutPort var = do
   case portM of
     Just (_,hty) -> do
       when (containsBiSignalIn hty)
-        (throw (ClashException srcspan ($(curLoc) ++ "BiSignalIn cannot be part of a function's result. Use 'readFromBiSignal'.") Nothing))
+        (throw (ClashException srcspan ($(curLoc) ++ "BiSignalIn cannot be part of a function's result. Use 'readFromBiSignal'.")))
       return portM
     _ -> return Nothing
 
@@ -1391,7 +1391,7 @@ throwAnnotatedSplitError
   -> NetlistMonad a
 throwAnnotatedSplitError loc typ = do
   (_,sp) <- Lens.use curCompNm
-  throw $ ClashException sp (loc ++ printf msg typ typ) Nothing
+  throw $ ClashException sp (loc ++ printf msg typ typ)
  where
   msg = unwords $ [ "Attempted to split %s into a number of HDL ports. This"
                   , "is not allowed in combination with attribute annotations."

@@ -624,8 +624,7 @@ specialise' specMapLbl specHistLbl specLimitLbl (TransformContext is0 _) e (Var 
                                  , "Body of `" ++ showPpr f ++ "':\n" ++ showPpr bodyTm ++ "\n"
                                  , "Argument (in position: " ++ show argLen ++ ") that triggered termination:\n" ++ (either showPpr showPpr) specArg
                                  , "Run with '-fclash-spec-limit=N' to increase the specialisation limit to N."
-                                 ])
-                        Nothing)
+                                 ]))
             else do
               let existingNames = collectBndrsMinusApps bodyTm
                   newNames      = [ mkUnsafeInternalName ("pTS" `Text.append` Text.pack (show n)) n

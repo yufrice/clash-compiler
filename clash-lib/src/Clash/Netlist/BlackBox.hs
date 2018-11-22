@@ -146,7 +146,7 @@ prepareBlackBox pNm templ bbCtx =
                             templ
        let msg = $(curLoc) ++ "Can't match template for " ++ show pNm ++ " :\n\n" ++ Text.unpack templ' ++
                 "\n\nwith context:\n\n" ++ show bbCtx
-       throw (ClashException sp msg Nothing)
+       throw (ClashException sp msg)
 
 mkArgument
   :: Identifier
@@ -314,7 +314,7 @@ mkPrimitive bbEParen bbEasD dst nm args ty = do
                         emptyBBContext False,[])
         _ -> do
           (_,sp) <- Lens.use curCompNm
-          throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm) Nothing)
+          throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm))
 
     resBndr
       :: Bool
@@ -367,7 +367,7 @@ mkFunInput resId e = do
               (_,sp) <- Lens.use curCompNm
               let templ = case bbM of
                             Just (P.BlackBox {..}) -> Left (kind,outputReg,libraries,imports,includes,nm,template)
-                            _ -> throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm) Nothing)
+                            _ -> throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm))
               return templ
             Data dc -> do
               tcm <- Lens.use tcCache

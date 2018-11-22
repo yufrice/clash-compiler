@@ -767,8 +767,7 @@ eliminateCastCast _ c@(Cast (Cast e tyA tyB) tyB' tyC) = do
           (nm,sp) <- Lens.use curFun
           throw (ClashException sp ($(curLoc) ++ showPpr nm
                   ++ ": Found 2 nested casts whose types don't line up:\n"
-                  ++ showPpr c)
-                Nothing)
+                  ++ showPpr c))
 
 eliminateCastCast _ e = return e
 

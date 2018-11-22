@@ -53,17 +53,17 @@ import Clash.Unique
 import qualified Paths_clash_lib      (version)
 #endif
 
-data ClashException = ClashException SrcSpan String (Maybe String)
+data ClashException = ClashException SrcSpan String
 
 instance Show ClashException where
-  show (ClashException _ s eM) = s ++ "\n" ++ maybe "" id eM
+  show (ClashException _ s) = s
 
 instance Exception.Exception ClashException
 
 assertPanic
   :: String -> Int -> a
 assertPanic file ln = Exception.throw
-  (ClashException noSrcSpan ("ASSERT failed! file " ++ file ++ ", line " ++ show ln) Nothing)
+  (ClashException noSrcSpan ("ASSERT failed! file " ++ file ++ ", line " ++ show ln))
 
 assertPprPanic
   :: HasCallStack => String -> Int -> Doc ann -> a
@@ -74,7 +74,7 @@ assertPprPanic _file _line msg = pprPanic "ASSERT failed!" doc
 pprPanic
   :: String -> Doc ann -> a
 pprPanic heading prettyMsg = Exception.throw
-  (ClashException noSrcSpan (renderString (layoutPretty defaultLayoutOptions doc)) Nothing)
+  (ClashException noSrcSpan (renderString (layoutPretty defaultLayoutOptions doc)))
  where
   doc = sep [pretty heading, nest 2 prettyMsg]
 
