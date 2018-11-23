@@ -306,30 +306,29 @@ handleClashException
   -> ClashOpts
   -> SomeException
   -> m a
-handleClashException df opts e = case fromException e of
-  Just (ClashException sp s eM) ->
-    throwOneError (mkPlainErrMsg df sp (text s $$ blankLine $$ srcInfo $$ showExtra (opt_errorExtra opts) eM))
-  _ -> case fromException e of
-    Just (ErrorCall msg) ->
-      throwOneError (mkPlainErrMsg df noSrcSpan (text "Clash error call:" $$ text msg))
+handleClashException df opts e =
+  case fromException e of
+    Just (ClashValidationException errs) ->
+      liftIO $ throwIO $ mkSrcErr $ listToBag $ map fromClashError errs
     _ -> case fromException e of
-      Just (e' :: SourceError) -> do
-        GHC.printException e'
-        liftIO $ exitWith (ExitFailure 1)
-      _ -> throwOneError (mkPlainErrMsg df noSrcSpan (text "Other error:" $$ text (displayException e)))
+      Just (ClashException sp s) ->
+        throwOneError (mkPlainErrMsg df sp (text s $$ blankLine $$ srcInfo))
+      _ -> case fromException e of
+        Just (ErrorCall msg) ->
+          throwOneError (mkPlainErrMsg df noSrcSpan (text "Clash error call:" $$ text msg))
+        _ -> case fromException e of
+          Just (e' :: SourceError) -> do
+            GHC.printException e'
+            liftIO $ exitWith (ExitFailure 1)
+          _ -> throwOneError (mkPlainErrMsg df noSrcSpan (text "Other error:" $$ text (displayException e)))
   where
+    fromClashError :: ClashError -> Maybe SrcSpan -> MsgDoc -> ErrMsg
+    fromClashError (ClashError callstack srcSpanM msg) =
+      mkPlainErrMsg df (fromMaybe noSrcSpan srcSpanM) (text msg)
+
     srcInfo = text "NB: The source location of the error is not exact, only indicative, as it is acquired after optimisations." $$
               text "The actual location of the error can be in a function that is inlined." $$
               text "To prevent inlining of those functions, annotate them with a NOINLINE pragma."
-
-    showExtra False (Just _)   =
-      blankLine $$
-      text "This error contains additional information, rerun with '-fclash-error-extra' to show this information."
-    showExtra True  (Just msg) =
-      blankLine $$
-      text "Additional information:" $$ blankLine $$
-      text msg
-    showExtra _ _ = empty
 
 ghciUI :: IORef ClashOpts -> [(FilePath, Maybe Phase)] -> Maybe [String] -> Ghc ()
 #if !defined(GHCI)

@@ -41,7 +41,7 @@ import           System.IO
   (hPutStrLn, stderr, hFlush, hIsTerminalDevice)
 import           Util                          (OverridingBool(..))
 
--- import           Clash.Backend                 as N
+import qualified Clash.Backend                 as Backend
 import           Clash.Core.DataCon            as D (dcTag)
 import           Clash.Core.FreeVars           (termFreeIds)
 import           Clash.Core.Literal            as L (Literal (..))
@@ -56,13 +56,16 @@ import           Clash.Core.TyCon              as C (tyConDataCons)
 import           Clash.Core.Util               (collectArgs, isFun, termType)
 import           Clash.Core.Var                as V (Id, Var (..), mkId, modifyVarName)
 import           Clash.Core.VarEnv
-  (extendInScopeSet, mkInScopeSet, lookupVarEnv, unionInScope, uniqAway, unitVarSet)
+  (extendInScopeSet, mkInScopeSet, lookupVarEnv, unionInScope, uniqAway,
+   unitVarSet, InScopeSet)
 import {-# SOURCE #-} Clash.Netlist
   (genComponent, mkDcApplication, mkDeclarations, mkExpr, mkNetDecl,
    mkProjection, mkSelection)
-import qualified Clash.Backend                 as Backend
 import           Clash.Driver.Types
   (opt_primWarn, opt_color, ClashOpts)
+import           Clash.Error
+  (ClashValidation, clashSuccessM, clashFailM, clashSuccess, mapAccumLMV
+  ,bindValidation, bindValidationM, accumulateErrors)
 import           Clash.Netlist.BlackBox.Types  as B
 import           Clash.Netlist.BlackBox.Util   as B
 import           Clash.Netlist.Id              (IdType (..))
@@ -94,42 +97,56 @@ warn opts msg = do
 
 -- | Generate the context for a BlackBox instantiation.
 mkBlackBoxContext
-  :: Id
+  :: HasCallStack
+  => Id
   -- ^ Identifier binding the primitive/blackbox application
   -> [Term]
   -- ^ Arguments of the primitive/blackbox application
-  -> NetlistMonad (BlackBoxContext,[Declaration])
+  -> NetlistMonad (ClashValidation (BlackBoxContext, [Declaration]))
 mkBlackBoxContext resId args = do
     -- Make context inputs
     tcm             <- Lens.use tcCache
     let resNm = nameOcc (varName resId)
-    (imps,impDecls) <- unzip <$> mapM (mkArgument resNm) args
-    (funs,funDecls) <- mapAccumLM (addFunction tcm) IntMap.empty (zip args [0..])
 
-    -- Make context result
-    let res = Identifier resNm Nothing
-    resTy <- unsafeCoreTypeToHWTypeM $(curLoc) (V.varType resId)
+    let argsV = accumulateErrors (map (mkArgument resNm) args)
 
-    lvl <- Lens.use curBBlvl
-    (nm,_) <- Lens.use curCompNm
+    bindValidationM (fmap unzip <$> argsV) $
+      \(imps, impDecls) -> do
+        let
+          funsV =
+            mapAccumLMV
+              (addFunction tcm)
+              IntMap.empty
+              (zip args [0..])
 
-    return ( Context (res,resTy) imps funs [] lvl nm
-           , concat impDecls ++ concat funDecls
-           )
+        bindValidationM funsV $ \(funs, funDecls) -> do
+          -- Make context result
+          let res = Identifier resNm Nothing
+          resTy <- unsafeCoreTypeToHWTypeM $(curLoc) (V.varType resId)
+
+          lvl <- Lens.use curBBlvl
+          (nm,_) <- Lens.use curCompNm
+
+          clashSuccessM
+            ( Context (res,resTy) imps funs [] lvl nm
+            , concat impDecls ++ concat funDecls )
   where
-    addFunction tcm im (arg,i) = if isFun tcm arg
-      then do curBBlvl Lens.+= 1
-              (f,d) <- mkFunInput resId arg
-              curBBlvl Lens.-= 1
-              let im' = IntMap.insert i f im
-              return (im',d)
-      else return (im,[])
+    addFunction tcm im (arg,i) =
+      if isFun tcm arg then do
+        curBBlvl Lens.+= 1
+        bindValidationM (mkFunInput resId arg) $ \(f, d) -> do
+          curBBlvl Lens.-= 1
+          let im' = IntMap.insert i f im
+          clashSuccessM (im',d)
+      else
+        clashSuccessM (im,[])
 
 prepareBlackBox
-  :: TextS.Text
+  :: HasCallStack
+  => TextS.Text
   -> BlackBox
   -> BlackBoxContext
-  -> NetlistMonad (BlackBox,[Declaration])
+  -> NetlistMonad (ClashValidation (BlackBox, [Declaration]))
 prepareBlackBox pNm templ bbCtx =
   if verifyBlackBoxContext bbCtx templ
      then do
@@ -138,64 +155,98 @@ prepareBlackBox pNm templ bbCtx =
             (fmap (first BBTemplate) . setSym bbCtx)
             (\bbName bbHash bbFunc -> pure (BBFunction bbName bbHash bbFunc, []))
             templ
-        return (t2,decls)
+        clashSuccessM (t2,decls)
      else do
        (_,sp) <- Lens.use curCompNm
        templ' <- onBlackBox (getMon . prettyBlackBox)
                             (\n h f -> return $ Text.pack $ show (BBFunction n h f))
                             templ
-       let msg = $(curLoc) ++ "Can't match template for " ++ show pNm ++ " :\n\n" ++ Text.unpack templ' ++
-                "\n\nwith context:\n\n" ++ show bbCtx
-       throw (ClashException sp msg)
+
+       clashFailM (Just sp) (TextS.concat
+         [ $(curLoc), "Can't match template for ", TextS.pack (show pNm)
+         , " :\n\n", Text.toStrict templ', "\n\nwith context:\n\n"
+         , TextS.pack (show bbCtx) ])
 
 mkArgument
-  :: Identifier
+  :: HasCallStack
+  => Identifier
   -- ^ LHS of the original let-binder
   -> Term
-  -> NetlistMonad ( (Expr,HWType,Bool)
-                  , [Declaration]
-                  )
+  -> NetlistMonad (ClashValidation ((Expr,HWType,Bool), [Declaration]))
 mkArgument bndr e = do
     tcm   <- Lens.use tcCache
     let ty = termType tcm e
     iw    <- Lens.use intWidth
     hwTyM <- N.termHWTypeM e
     let eTyMsg = "(" ++ showPpr e ++ " :: " ++ showPpr ty ++ ")"
-    ((e',t,l),d) <- case hwTyM of
+    etld <- case hwTyM of
       Nothing
         | (Prim nm _,_) <- collectArgs e
         , nm == "Clash.Transformations.removedArg"
-        -> return ((Identifier nm Nothing, Void Nothing, False),[])
+        -> clashSuccessM ((Identifier nm Nothing, Void Nothing, False),[])
         | otherwise
-        -> return ((error ($(curLoc) ++ "Forced to evaluate untranslatable type: " ++ eTyMsg), Void Nothing, False), [])
+        ->
+          -- TODO: Don't hide bottoms
+          clashSuccessM ((error ($(curLoc) ++ "Forced to evaluate untranslatable type: " ++ eTyMsg), Void Nothing, False), [])
       Just hwTy -> case collectArgs e of
-        (C.Var v,[]) -> return ((Identifier (nameOcc (varName v)) Nothing,hwTy,False),[])
-        (C.Literal (IntegerLiteral i),[]) -> return ((N.Literal (Just (Signed iw,iw)) (N.NumLit i),hwTy,True),[])
-        (C.Literal (IntLiteral i), []) -> return ((N.Literal (Just (Signed iw,iw)) (N.NumLit i),hwTy,True),[])
-        (C.Literal (WordLiteral w), []) -> return ((N.Literal (Just (Unsigned iw,iw)) (N.NumLit w),hwTy,True),[])
-        (C.Literal (CharLiteral c), []) -> return ((N.Literal (Just (Unsigned 21,21)) (N.NumLit . toInteger $ ord c),hwTy,True),[])
-        (C.Literal (StringLiteral s),[]) -> return ((N.Literal Nothing (N.StringLit s),hwTy,True),[])
-        (C.Literal (Int64Literal i), []) -> return ((N.Literal (Just (Signed 64,64)) (N.NumLit i),hwTy,True),[])
-        (C.Literal (Word64Literal i), []) -> return ((N.Literal (Just (Unsigned 64,64)) (N.NumLit i),hwTy,True),[])
-        (C.Literal (NaturalLiteral n), []) -> return ((N.Literal (Just (Unsigned iw,iw)) (N.NumLit n),hwTy,True),[])
+        (C.Var v,[]) ->
+          clashSuccessM ((Identifier (nameOcc (varName v)) Nothing,hwTy,False),[])
+        (C.Literal (IntegerLiteral i),[]) ->
+          clashSuccessM ((N.Literal (Just (Signed iw,iw)) (N.NumLit i),hwTy,True),[])
+        (C.Literal (IntLiteral i), []) ->
+          clashSuccessM ((N.Literal (Just (Signed iw,iw)) (N.NumLit i),hwTy,True),[])
+        (C.Literal (WordLiteral w), []) ->
+          clashSuccessM ((N.Literal (Just (Unsigned iw,iw)) (N.NumLit w),hwTy,True),[])
+        (C.Literal (CharLiteral c), []) ->
+          clashSuccessM ((N.Literal (Just (Unsigned 21,21)) (N.NumLit . toInteger $ ord c),hwTy,True),[])
+        (C.Literal (StringLiteral s),[]) ->
+          clashSuccessM ((N.Literal Nothing (N.StringLit s),hwTy,True),[])
+        (C.Literal (Int64Literal i), []) ->
+          clashSuccessM ((N.Literal (Just (Signed 64,64)) (N.NumLit i),hwTy,True),[])
+        (C.Literal (Word64Literal i), []) ->
+          clashSuccessM ((N.Literal (Just (Unsigned 64,64)) (N.NumLit i),hwTy,True),[])
+        (C.Literal (NaturalLiteral n), []) ->
+          clashSuccessM ((N.Literal (Just (Unsigned iw,iw)) (N.NumLit n),hwTy,True),[])
         (Prim f _,args) -> do
-          (e',d) <- mkPrimitive True False (Left bndr) f args ty
-          case e' of
-            (Identifier _ _) -> return ((e',hwTy,False), d)
-            _                -> return ((e',hwTy,isConstant e), d)
+          bindValidationM (mkPrimitive True False (Left bndr) f args ty) $
+            \case
+              (e'@(Identifier _ _), d) ->
+                clashSuccessM ((e',hwTy,False), d)
+              (e', d) ->
+                clashSuccessM ((e',hwTy,isConstant e), d)
         (Data dc, args) -> do
-          (exprN,dcDecls) <- mkDcApplication hwTy (Left bndr) dc (lefts args)
-          return ((exprN,hwTy,isConstant e),dcDecls)
+          let app = mkDcApplication hwTy (Left bndr) dc (lefts args)
+          bindValidationM app $ \(exprN,dcDecls) ->
+            clashSuccessM ((exprN,hwTy,isConstant e),dcDecls)
         (Case scrut ty' [alt],[]) -> do
-          (projection,decls) <- mkProjection False (Left bndr) scrut ty' alt
-          return ((projection,hwTy,False),decls)
+          let p = mkProjection False (Left bndr) scrut ty' alt
+          bindValidationM p $ \(projection, decls) ->
+            clashSuccessM ((projection,hwTy,False),decls)
         _ ->
-          return ((Identifier (error ($(curLoc) ++ "Forced to evaluate unexpected function argument: " ++ eTyMsg)) Nothing
+          -- TODO: Don't hide bottoms
+          clashSuccessM
+            ((Identifier (error ($(curLoc) ++ "Forced to evaluate unexpected function argument: " ++ eTyMsg)) Nothing
                   ,hwTy,False),[])
-    return ((e',t,l),d)
+
+    bindValidationM (return etld) clashSuccessM
+
+
+prepareBlackBoxAndContext
+  :: HasCallStack
+  => Id
+  -> [Either Term b]
+  -> TextS.Text
+  -> BlackBox
+  -> NetlistMonad
+      (ClashValidation (BlackBoxContext, [Declaration], BlackBox, [Declaration]))
+prepareBlackBoxAndContext dst args pNm tempE = do
+  bindValidationM (mkBlackBoxContext dst (lefts args)) $ \(bbCtx, ctxDcls) ->
+    bindValidationM (prepareBlackBox pNm tempE bbCtx) $ \(bbTempl, templDecl) ->
+      clashSuccessM (bbCtx, ctxDcls,bbTempl,templDecl)
 
 mkPrimitive
-  :: Bool
+  :: HasCallStack
+  => Bool
   -- ^ Put BlackBox expression in parenthesis
   -> Bool
   -- ^ Treat BlackBox expression as declaration
@@ -207,7 +258,7 @@ mkPrimitive
   -- ^ Arguments
   -> Type
   -- ^ Result type
-  -> NetlistMonad (Expr,[Declaration])
+  -> NetlistMonad (ClashValidation (Expr, [Declaration]))
 mkPrimitive bbEParen bbEasD dst nm args ty = do
   go =<< HashMap.lookup nm <$> Lens.use primitives
   where
@@ -238,12 +289,12 @@ mkPrimitive bbEParen bbEasD dst nm args ty = do
               resM <- resBndr True wr' dst
               case resM of
                 Just (dst',dstNm,dstDecl) -> do
-                  (bbCtx,ctxDcls)   <- mkBlackBoxContext dst' (lefts args)
-                  (templ,templDecl) <- prepareBlackBox pNm tempD bbCtx
-                  let bbDecl = N.BlackBoxD pNm (libraries p) (imports p)
-                                           (includes p) templ bbCtx
-                  return (Identifier dstNm Nothing,dstDecl ++ ctxDcls ++ templDecl ++ [bbDecl])
-                Nothing -> return (Identifier "__VOID__" Nothing,[])
+                  bindValidationM (prepareBlackBoxAndContext dst' args pNm tempD) $
+                    \(bbCtx, ctxDcls, bbTempl, templDecl) -> do
+                      let bbDecl = N.BlackBoxD pNm (libraries p) (imports p) (includes p) bbTempl bbCtx
+                      clashSuccessM (Identifier dstNm Nothing,dstDecl ++ ctxDcls ++ templDecl ++ [bbDecl])
+                Nothing ->
+                  clashSuccessM (Identifier "__VOID__" Nothing,[])
             TExpr -> do
               let tempE = template p
                   pNm = name p
@@ -252,22 +303,28 @@ mkPrimitive bbEParen bbEasD dst nm args ty = do
                   resM <- resBndr True Wire dst
                   case resM of
                     Just (dst',dstNm,dstDecl) -> do
-                      (bbCtx,ctxDcls)     <- mkBlackBoxContext dst' (lefts args)
-                      (bbTempl,templDecl) <- prepareBlackBox pNm tempE bbCtx
-                      let tmpAssgn = Assignment dstNm
-                                        (BlackBoxE pNm (libraries p) (imports p)
-                                                   (includes p) bbTempl bbCtx
-                                                   bbEParen)
-                      return (Identifier dstNm Nothing, dstDecl ++ ctxDcls ++ templDecl ++ [tmpAssgn])
-                    Nothing -> return (Identifier "__VOID__" Nothing,[])
+                      bindValidationM (prepareBlackBoxAndContext dst' args pNm tempE) $
+                        \(bbCtx, ctxDcls, bbTempl, templDecl) -> do
+                          let
+                            tmpAssgn =
+                              Assignment
+                                dstNm
+                                (BlackBoxE pNm (libraries p) (imports p)
+                                           (includes p) bbTempl bbCtx bbEParen)
+                          clashSuccessM
+                            (Identifier dstNm Nothing, dstDecl ++ ctxDcls ++ templDecl ++ [tmpAssgn])
+                    Nothing ->
+                      clashSuccessM (Identifier "__VOID__" Nothing,[])
                 else do
                   resM <- resBndr False Wire dst
                   case resM of
                     Just (dst',_,_) -> do
-                      (bbCtx,ctxDcls)     <- mkBlackBoxContext dst' (lefts args)
-                      (bbTempl,templDecl) <- prepareBlackBox pNm tempE bbCtx
-                      return (BlackBoxE pNm (libraries p) (imports p) (includes p) bbTempl bbCtx bbEParen,ctxDcls ++ templDecl)
-                    Nothing -> return (Identifier "__VOID__" Nothing,[])
+                      bindValidationM (prepareBlackBoxAndContext dst' args pNm tempE) $
+                        \(bbCtx, ctxDcls, bbTempl, templDecl) -> do
+                          let bbE = BlackBoxE pNm (libraries p) (imports p) (includes p) bbTempl bbCtx bbEParen
+                          clashSuccessM (bbE, ctxDcls ++ templDecl)
+                    Nothing ->
+                      clashSuccessM (Identifier "__VOID__" Nothing,[])
         Just (P.Primitive pNm _)
           | pNm == "GHC.Prim.tagToEnum#" -> do
               hwTy <- N.unsafeCoreTypeToHWTypeM $(curLoc) ty
@@ -276,40 +333,46 @@ mkPrimitive bbEParen bbEasD dst nm args ty = do
                   tcm <- Lens.use tcCache
                   let dcs = tyConDataCons (tcm `lookupUniqMap'` tcN)
                       dc  = dcs !! fromInteger i
-                  (exprN,dcDecls) <- mkDcApplication hwTy dst dc []
-                  return (exprN,dcDecls)
+                  mkDcApplication hwTy dst dc []
                 [Right _, Left scrut] -> do
                   tcm     <- Lens.use tcCache
                   let scrutTy = termType tcm scrut
-                  (scrutExpr,scrutDecls) <- mkExpr False (Left "#tte_rhs") scrutTy scrut
-                  case scrutExpr of
-                    Identifier id_ Nothing -> return (DataTag hwTy (Left id_),scrutDecls)
-                    _ -> do
-                      scrutHTy <- unsafeCoreTypeToHWTypeM $(curLoc) scrutTy
-                      tmpRhs <- mkUniqueIdentifier Extended "#tte_rhs"
-                      let netDeclRhs   = NetDecl Nothing tmpRhs scrutHTy
-                          netAssignRhs = Assignment tmpRhs scrutExpr
-                      return (DataTag hwTy (Left tmpRhs),[netDeclRhs,netAssignRhs] ++ scrutDecls)
+                  let expr = mkExpr False (Left "#tte_rhs") scrutTy scrut
+                  bindValidationM expr $ \(scrutExpr, scrutDecls) ->
+                    case scrutExpr of
+                      Identifier id_ Nothing ->
+                        clashSuccessM (DataTag hwTy (Left id_),scrutDecls)
+                      _ -> do
+                        scrutHTy <- unsafeCoreTypeToHWTypeM $(curLoc) scrutTy
+                        tmpRhs <- mkUniqueIdentifier Extended "#tte_rhs"
+                        let netDeclRhs   = NetDecl Nothing tmpRhs scrutHTy
+                            netAssignRhs = Assignment tmpRhs scrutExpr
+                        clashSuccessM
+                          (DataTag hwTy (Left tmpRhs),[netDeclRhs,netAssignRhs] ++ scrutDecls)
                 _ -> error $ $(curLoc) ++ "tagToEnum: " ++ show (map (either showPpr showPpr) args)
           | pNm == "GHC.Prim.dataToTag#" -> case args of
               [Right _,Left (Data dc)] -> do
                 iw <- Lens.use intWidth
-                return (N.Literal (Just (Signed iw,iw)) (NumLit $ toInteger $ dcTag dc - 1),[])
+                clashSuccessM
+                  (N.Literal (Just (Signed iw,iw)) (NumLit $ toInteger $ dcTag dc - 1),[])
               [Right _,Left scrut] -> do
                 tcm      <- Lens.use tcCache
                 let scrutTy = termType tcm scrut
                 scrutHTy <- unsafeCoreTypeToHWTypeM $(curLoc) scrutTy
-                (scrutExpr,scrutDecls) <- mkExpr False (Left "#dtt_rhs") scrutTy scrut
-                case scrutExpr of
-                  Identifier id_ Nothing -> return (DataTag scrutHTy (Right id_),scrutDecls)
-                  _ -> do
-                    tmpRhs  <- mkUniqueIdentifier Extended "#dtt_rhs"
-                    let netDeclRhs   = NetDecl Nothing tmpRhs scrutHTy
-                        netAssignRhs = Assignment tmpRhs scrutExpr
-                    return (DataTag scrutHTy (Right tmpRhs),[netDeclRhs,netAssignRhs] ++ scrutDecls)
+                let expr = mkExpr False (Left "#dtt_rhs") scrutTy scrut
+                bindValidationM expr $ \(scrutExpr,scrutDecls) ->
+                  case scrutExpr of
+                    Identifier id_ Nothing ->
+                      clashSuccessM (DataTag scrutHTy (Right id_),scrutDecls)
+                    _ -> do
+                      tmpRhs  <- mkUniqueIdentifier Extended "#dtt_rhs"
+                      let netDeclRhs   = NetDecl Nothing tmpRhs scrutHTy
+                          netAssignRhs = Assignment tmpRhs scrutExpr
+                      clashSuccessM (DataTag scrutHTy (Right tmpRhs),[netDeclRhs,netAssignRhs] ++ scrutDecls)
               _ -> error $ $(curLoc) ++ "dataToTag: " ++ show (map (either showPpr showPpr) args)
           | otherwise ->
-              return (BlackBoxE "" [] [] []
+              -- TODO: Should this be an error? 'NO_TRANSLATION_FOR seems ominous'
+              clashSuccessM (BlackBoxE "" [] [] []
                         (BBTemplate [C $ mconcat ["NO_TRANSLATION_FOR:",fromStrict pNm]])
                         emptyBBContext False,[])
         _ -> do
@@ -346,113 +409,132 @@ mkPrimitive bbEParen bbEasD dst nm args ty = do
 -- argument term, given that the term is a function. Errors if the term is not
 -- a function
 mkFunInput
-  :: Id
+  :: HasCallStack
+  => Id
   -- ^ Identifier binding the encompassing primitive/blackbox application
   -> Term
   -- ^ The function argument term
   -> NetlistMonad
+      (ClashValidation
       ((Either BlackBox (Identifier,[Declaration])
        ,WireOrReg
        ,[BlackBoxTemplate]
        ,[BlackBoxTemplate]
        ,[((TextS.Text,TextS.Text),BlackBox)]
        ,BlackBoxContext)
-      ,[Declaration])
+      ,[Declaration]))
 mkFunInput resId e = do
-  let (appE,args) = collectArgs e
-  (bbCtx,dcls) <- mkBlackBoxContext resId (lefts args)
-  templ <- case appE of
-            Prim nm _ -> do
-              bbM <- fmap (HashMap.lookup nm) $ Lens.use primitives
-              (_,sp) <- Lens.use curCompNm
-              let templ = case bbM of
-                            Just (P.BlackBox {..}) -> Left (kind,outputReg,libraries,imports,includes,nm,template)
-                            _ -> throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm))
-              return templ
-            Data dc -> do
-              tcm <- Lens.use tcCache
-              let eTy = termType tcm e
-                  (_,resTy) = splitFunTys tcm eTy
-              resHTyM <- coreTypeToHWTypeM resTy
-              case resHTyM of
-                Just resHTy@(SP _ dcArgPairs) -> do
-                  let dcI      = dcTag dc - 1
-                      dcArgs   = snd $ indexNote ($(curLoc) ++ "No DC with tag: " ++ show dcI) dcArgPairs dcI
-                      dcInps   = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..(length dcArgs - 1)]]
-                      dcApp    = DataCon resHTy (DC (resHTy,dcI)) dcInps
-                      dcAss    = Assignment "~RESULT" dcApp
-                  return (Right (("",[dcAss]),Wire))
-                Just resHTy@(Product _ dcArgs) -> do
-                  let dcInps = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..(length dcArgs - 1)]]
-                      dcApp  = DataCon resHTy (DC (resHTy,0)) dcInps
-                      dcAss  = Assignment "~RESULT" dcApp
-                  return (Right (("",[dcAss]),Wire))
-                Just resHTy@(Vector _ _) -> do
-                  let dcInps = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(1::Int)..2] ]
-                      dcApp  = DataCon resHTy (DC (resHTy,1)) dcInps
-                      dcAss  = Assignment "~RESULT" dcApp
-                  return (Right (("",[dcAss]),Wire))
-                -- The following happens for things like `Maybe ()`
-                Just resHTy@(Sum _ _) -> do
-                  let dcI   = dcTag dc - 1
-                      dcApp = DataCon resHTy (DC (resHTy,dcI)) []
-                      dcAss = Assignment "~RESULT" dcApp
-                  return (Right (("",[dcAss]),Wire))
-                -- The following happens for things like `(1,())`
-                Just _ -> do
-                  let inp   = Identifier "~ARG[0]" Nothing
-                      assgn = Assignment "~RESULT" inp
-                  return (Right (("",[assgn]),Wire))
-                _ -> error $ $(curLoc) ++ "Cannot make function input for: " ++ showPpr e
-            C.Var fun -> do
-              normalized <- Lens.use bindings
-              case lookupVarEnv fun normalized of
-                Just _ -> do
-                  (_,_,Component compName compInps [snd -> compOutp] _) <- preserveVarEnv $ genComponent fun
-                  let inpAssigns    = zipWith (\(i,t) e' -> (Identifier i Nothing,In,t,e')) compInps [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..] ]
-                      outpAssign    = (Identifier (fst compOutp) Nothing,Out,snd compOutp,Identifier "~RESULT" Nothing)
-                  i <- varCount <<%= (+1)
-                  let instLabel     = TextS.concat [compName,TextS.pack ("_" ++ show i)]
-                      instDecl      = InstDecl Entity Nothing compName instLabel (outpAssign:inpAssigns)
-                  return (Right (("",[instDecl]),Wire))
-                Nothing -> error $ $(curLoc) ++ "Cannot make function input for: " ++ showPpr e
-            C.Lam {} -> do
-              let is0 = mkInScopeSet (Lens.foldMapOf termFreeIds unitVarSet appE)
-              go is0 0 appE
+  let (appE, args) = collectArgs e
+
+  bindValidationM (mkBlackBoxContext resId (lefts args)) $ \(bbCtx, dcls) -> do
+    templ <-
+      case appE of
+        Prim nm _ -> do
+          bbM <- fmap (HashMap.lookup nm) $ Lens.use primitives
+          (_,sp) <- Lens.use curCompNm
+          case bbM of
+            Just (P.BlackBox {..}) ->
+              clashSuccessM (Left (kind,outputReg,libraries,imports,includes,nm,template))
+            _ ->
+              clashFailM (Just sp) (TextS.concat [$(curLoc), "No blackbox found for: ", nm])
+        Data dc -> do
+          tcm <- Lens.use tcCache
+          let eTy = termType tcm e
+              (_,resTy) = splitFunTys tcm eTy
+          resHTyM <- coreTypeToHWTypeM resTy
+          case resHTyM of
+            Just resHTy@(SP _ dcArgPairs) -> do
+              let dcI      = dcTag dc - 1
+                  dcArgs   = snd $ indexNote ($(curLoc) ++ "No DC with tag: " ++ show dcI) dcArgPairs dcI
+                  dcInps   = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..(length dcArgs - 1)]]
+                  dcApp    = DataCon resHTy (DC (resHTy,dcI)) dcInps
+                  dcAss    = Assignment "~RESULT" dcApp
+              clashSuccessM (Right (("",[dcAss]),Wire))
+            Just resHTy@(Product _ dcArgs) -> do
+              let dcInps = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..(length dcArgs - 1)]]
+                  dcApp  = DataCon resHTy (DC (resHTy,0)) dcInps
+                  dcAss  = Assignment "~RESULT" dcApp
+              clashSuccessM (Right (("",[dcAss]),Wire))
+            Just resHTy@(Vector _ _) -> do
+              let dcInps = [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(1::Int)..2] ]
+                  dcApp  = DataCon resHTy (DC (resHTy,1)) dcInps
+                  dcAss  = Assignment "~RESULT" dcApp
+              clashSuccessM (Right (("",[dcAss]),Wire))
+            -- The following happens for things like `Maybe ()`
+            Just resHTy@(Sum _ _) -> do
+              let dcI   = dcTag dc - 1
+                  dcApp = DataCon resHTy (DC (resHTy,dcI)) []
+                  dcAss = Assignment "~RESULT" dcApp
+              clashSuccessM (Right (("",[dcAss]),Wire))
+            -- The following happens for things like `(1,())`
+            Just _ -> do
+              let inp   = Identifier "~ARG[0]" Nothing
+                  assgn = Assignment "~RESULT" inp
+              clashSuccessM (Right (("",[assgn]),Wire))
+            -- TODO: user error?
             _ -> error $ $(curLoc) ++ "Cannot make function input for: " ++ showPpr e
-  case templ of
-    Left (TDecl,oreg,libs,imps,inc,_,templ') -> do
-      (l',templDecl)
-        <- onBlackBox
-            (fmap (first BBTemplate) . setSym bbCtx)
-            (\bbName bbHash bbFunc -> pure $ (BBFunction bbName bbHash bbFunc, []))
+        C.Var fun -> do
+          normalized <- Lens.use bindings
+          case lookupVarEnv fun normalized of
+            Just _ -> do
+              bindValidationM (preserveVarEnv (genComponent fun)) $
+                \(_,_,Component compName compInps [snd -> compOutp] _) -> do
+                let inpAssigns    = zipWith (\(i,t) e' -> (Identifier i Nothing,In,t,e')) compInps [ Identifier (TextS.pack ("~ARG[" ++ show x ++ "]")) Nothing | x <- [(0::Int)..] ]
+                    outpAssign    = (Identifier (fst compOutp) Nothing,Out,snd compOutp,Identifier "~RESULT" Nothing)
+                i <- varCount <<%= (+1)
+                let instLabel     = TextS.concat [compName,TextS.pack ("_" ++ show i)]
+                    instDecl      = InstDecl Entity Nothing compName instLabel (outpAssign:inpAssigns)
+                clashSuccessM (Right (("",[instDecl]),Wire))
+            -- TODO: user error?
+            Nothing -> error $ $(curLoc) ++ "Cannot make function input for: " ++ showPpr e
+        C.Lam {} -> do
+          let is0 = mkInScopeSet (Lens.foldMapOf termFreeIds unitVarSet appE)
+          bindValidationM (go is0 0 appE) (clashSuccessM . Right)
+        -- TODO: User error?
+        _ -> error $ $(curLoc) ++ "Cannot make function input for: " ++ showPpr e
+
+    bindValidationM (return templ) $ \case
+      Left (TDecl,oreg,libs,imps,inc,_,templ') -> do
+        (l', templDecl)
+          <- onBlackBox
+              (fmap (first BBTemplate) . setSym bbCtx)
+              (\bbName bbHash bbFunc -> pure $ (BBFunction bbName bbHash bbFunc, []))
+              templ'
+        clashSuccessM ( (Left l', if oreg then Reg else Wire, libs, imps, inc, bbCtx)
+                      , dcls ++ templDecl )
+      Left (TExpr,_,libs,imps,inc,nm,templ') -> do
+        clashSuccess <$>
+          onBlackBox
+            (\t -> do
+              t' <- getMon (prettyBlackBox t)
+              let assn = Assignment "~RESULT" (Identifier (Text.toStrict t') Nothing)
+              return ((Right ("",[assn]),Wire,libs,imps,inc,bbCtx),dcls))
+            (\bbName bbHash (TemplateFunction k g _) -> do
+              let f' bbCtx' = do
+                    let assn = Assignment "~RESULT"
+                                (BlackBoxE nm libs imps inc templ' bbCtx' False)
+                    p <- getMon (Backend.blockDecl "" [assn])
+                    return p
+              return ((Left (BBFunction bbName bbHash (TemplateFunction k g f'))
+                      ,Wire
+                      ,[]
+                      ,[]
+                      ,[]
+                      ,bbCtx
+                      )
+                     ,dcls
+                     )
+            )
             templ'
-      return ((Left l',if oreg then Reg else Wire,libs,imps,inc,bbCtx),dcls ++ templDecl)
-    Left (TExpr,_,libs,imps,inc,nm,templ') -> do
-      onBlackBox
-        (\t -> do t' <- getMon (prettyBlackBox t)
-                  let assn = Assignment "~RESULT" (Identifier (Text.toStrict t') Nothing)
-                  return ((Right ("",[assn]),Wire,libs,imps,inc,bbCtx),dcls))
-        (\bbName bbHash (TemplateFunction k g _) -> do
-          let f' bbCtx' = do
-                let assn = Assignment "~RESULT"
-                            (BlackBoxE nm libs imps inc templ' bbCtx' False)
-                p <- getMon (Backend.blockDecl "" [assn])
-                return p
-          return ((Left (BBFunction bbName bbHash (TemplateFunction k g f'))
-                  ,Wire
-                  ,[]
-                  ,[]
-                  ,[]
-                  ,bbCtx
-                  )
-                 ,dcls
-                 )
-        )
-        templ'
-    Right (decl,wr) ->
-      return ((Right decl,wr,[],[],[],bbCtx),dcls)
+      Right (decl, wr) ->
+        clashSuccessM ((Right decl, wr, [], [], [], bbCtx), dcls)
   where
+    go
+      :: HasCallStack
+      => InScopeSet
+      -> Int
+      -> Term
+      -> NetlistMonad (ClashValidation ((Identifier, [Declaration]), WireOrReg))
     go is0 n (Lam id_ e') = do
       lvl <- Lens.use curBBlvl
       let nm    = TextS.concat
@@ -465,32 +547,34 @@ mkFunInput resId e = do
 
     go _ _ (C.Var v) = do
       let assn = Assignment "~RESULT" (Identifier (nameOcc (varName v)) Nothing)
-      return (Right (("",[assn]),Wire))
+      clashSuccessM (("", [assn]), Wire)
 
     go _ _ (Case scrut ty [alt]) = do
-      (projection,decls) <- mkProjection False (Left "#bb_res") scrut ty alt
-      let assn = Assignment "~RESULT" projection
-      nm <- if null decls
-               then return ""
-               else mkUniqueIdentifier Basic "projection"
-      return (Right ((nm,decls ++ [assn]),Wire))
+      let p = mkProjection False (Left "#bb_res") scrut ty alt
+      bindValidationM p $ \(projection, decls) -> do
+        let assn = Assignment "~RESULT" projection
+        nm <- if null decls
+                 then return ""
+                 else mkUniqueIdentifier Basic "projection"
+        clashSuccessM ((nm, decls ++ [assn]), Wire)
 
     go _ _ (Case scrut ty alts@(_:_:_)) = do
       -- TODO: check that it's okay to use `mkUnsafeSystemName`
       let resId'  = resId {varName = mkUnsafeSystemName "~RESULT" 0}
-      selectionDecls <- mkSelection resId' scrut ty alts
-      nm <- mkUniqueIdentifier Basic "selection"
-      return (Right ((nm,selectionDecls),Reg))
+      bindValidationM (mkSelection resId' scrut ty alts) $ \selectionDecls -> do
+        nm <- mkUniqueIdentifier Basic "selection"
+        clashSuccessM ((nm, selectionDecls), Reg)
 
     go _ _ e'@(App _ _) = do
       tcm <- Lens.use tcCache
       let eType = termType tcm e'
-      (appExpr,appDecls) <- mkExpr False (Left "#bb_res") eType e'
-      let assn = Assignment "~RESULT" appExpr
-      nm <- if null appDecls
-               then return ""
-               else mkUniqueIdentifier Basic "block"
-      return (Right ((nm,appDecls ++ [assn]),Wire))
+      bindValidationM (mkExpr False (Left "#bb_res") eType e') $
+        \(appExpr, appDecls) -> do
+          let assn = Assignment "~RESULT" appExpr
+          nm <- if null appDecls
+                   then return ""
+                   else mkUniqueIdentifier Basic "block"
+          clashSuccessM ((nm, appDecls ++ [assn]), Wire)
 
     go is0 _ e'@(Letrec {}) = do
       tcm <- Lens.use tcCache
@@ -507,11 +591,13 @@ mkFunInput resId e = do
         Just result -> do
           let binders' = map (\(id_,tm) -> (goR result id_,tm)) binders
           netDecls <- fmap catMaybes . mapM mkNetDecl $ filter ((/= result) . fst) binders
-          decls    <- concat <$> mapM (uncurry mkDeclarations) binders'
+          decls0   <- fmap concat <$> accumulateErrors (map (uncurry mkDeclarations) binders')
           Just (NetDecl' _ rw _ _) <- mkNetDecl . head $ filter ((==result) . fst) binders
           nm <- mkUniqueIdentifier Basic "fun"
-          return (Right ((nm,netDecls ++ decls),rw))
-        Nothing -> return (Right (("",[]),Wire))
+          return $ bindValidation decls0 $ \decls1 ->
+            clashSuccess ((nm, netDecls ++ decls1), rw)
+        Nothing ->
+          clashSuccessM (("", []), Wire)
       where
         -- TODO: check that it's okay to use `mkUnsafeSystemName`
         goR r id_ | id_ == r  = id_ {varName = mkUnsafeSystemName "~RESULT" 0}

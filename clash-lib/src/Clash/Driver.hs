@@ -19,10 +19,11 @@ module Clash.Driver where
 
 import qualified Control.Concurrent.Supply        as Supply
 import           Control.DeepSeq
-import           Control.Exception                (tryJust, bracket)
+import           Control.Exception                (tryJust, bracket, throw)
 import           Control.Lens                     (use, view, (^.), _3, _4)
 import           Control.Monad                    (guard, when, unless, join, foldM)
 import           Control.Monad.State              (evalState, get)
+import           Data.DList                       (toList)
 import           Data.Hashable                    (hash)
 import qualified Data.HashSet                     as HashSet
 import           Data.IntMap                      (IntMap)
@@ -69,6 +70,8 @@ import           Clash.Core.TyCon                 (TyConMap, TyConName)
 import           Clash.Core.Var                   (Id, varName)
 import           Clash.Core.VarEnv                (InScopeSet, emptyVarEnv)
 import           Clash.Driver.Types
+import           Clash.Error
+  (ClashValidationException(..), toEither)
 import           Clash.Netlist                    (genNetlist)
 import           Clash.Netlist.Util               (genComponentName, genTopComponentName)
 import           Clash.Netlist.BlackBox.Parser    (runParse)
@@ -225,9 +228,14 @@ generateHDL reprs bindingsMap hdlState primMap tcm tupTcm typeTrans eval
       putStrLn $ "Normalisation took " ++ show prepNormDiff
 
       -- 2. Generate netlist for topEntity
-      (netlist,seen') <-
+      netlistV <-
         genNetlist False opts reprs transformedBindings is0 topEntities primMap
                    tcm typeTrans iw mkId extId seen hdlDir prefixM topEntity
+
+      (netlist, seen') <-
+        case toEither netlistV of
+          Left errs -> throw (ClashValidationException (toList errs))
+          Right res -> return res
 
       netlistTime <- netlist `deepseq` Clock.getCurrentTime
       let normNetDiff = Clock.diffUTCTime netlistTime normTime
@@ -261,9 +269,14 @@ generateHDL reprs bindingsMap hdlState primMap tcm tupTcm typeTrans eval
       putStrLn $ "Testbench normalisation took " ++ show prepNormDiff
 
       -- 2. Generate netlist for topEntity
-      (netlist,seen'') <-
+      netlistV <-
         genNetlist True opts reprs transformedBindings is0 topEntities primMap
                    tcm typeTrans iw mkId extId seen' hdlDir prefixM tb
+
+      (netlist, seen'') <-
+        case toEither netlistV of
+          Left errs -> throw (ClashValidationException (toList errs))
+          Right res -> return res
 
       netlistTime <- netlist `deepseq` Clock.getCurrentTime
       let normNetDiff = Clock.diffUTCTime netlistTime normTime

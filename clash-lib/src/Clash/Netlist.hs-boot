@@ -20,39 +20,56 @@ import Clash.Core.Type      (Type)
 import Clash.Core.Var       (Id)
 import Clash.Netlist.Types  (Expr, HWType, Identifier, NetlistMonad, Component,
                              Declaration)
+import Clash.Error          (ClashValidation)
 import SrcLoc               (SrcSpan)
 
+import GHC.Stack            (HasCallStack)
 
-genComponent :: Id
-             -> NetlistMonad (SrcSpan,[Identifier],Component)
 
-mkExpr :: Bool
-       -> Either Identifier Id
-       -> Type
-       -> Term
-       -> NetlistMonad (Expr,[Declaration])
+genComponent
+  :: HasCallStack
+  => Id
+  -> NetlistMonad (ClashValidation (SrcSpan,[Identifier],Component))
 
-mkDcApplication :: HWType
-                -> Either Identifier Id
-                -> DataCon
-                -> [Term]
-                -> NetlistMonad (Expr,[Declaration])
+mkExpr
+  :: HasCallStack
+  => Bool
+  -> Either Identifier Id
+  -> Type
+  -> Term
+  -> NetlistMonad (ClashValidation (Expr, [Declaration]))
+
+mkDcApplication
+  :: HasCallStack
+  => HWType
+  -> Either Identifier Id
+  -> DataCon
+  -> [Term]
+  -> NetlistMonad (ClashValidation (Expr, [Declaration]))
 
 mkProjection
-  :: Bool
+  :: HasCallStack
+  => Bool
   -> Either Identifier Id
   -> Term
   -> Type
   -> Alt
-  -> NetlistMonad (Expr, [Declaration])
+  -> NetlistMonad (ClashValidation (Expr, [Declaration]))
 
 mkSelection
-  :: Id
+  :: HasCallStack
+  => Id
   -> Term
   -> Type
   -> [Alt]
-  -> NetlistMonad [Declaration]
+  -> NetlistMonad (ClashValidation [Declaration])
 
-mkNetDecl :: LetBinding -> NetlistMonad (Maybe Declaration)
+mkNetDecl
+  :: LetBinding
+  -> NetlistMonad (Maybe Declaration)
 
-mkDeclarations :: Id -> Term -> NetlistMonad [Declaration]
+mkDeclarations
+  :: HasCallStack
+  => Id
+  -> Term
+  -> NetlistMonad (ClashValidation [Declaration])
