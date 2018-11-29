@@ -1,9 +1,14 @@
 # source tree roadmap
 
 #### $TOP
+
+| file | comment |
+| --- | --- |
 | `.gitlib-ci.yml` | Gitlab CI/CD configuration |
 | `.travis.yml` | TravisCI configuration |
-| `Clash.hs` | Setup clash driver pipeline for running clash in an interactive session |
+| `Clash.hs` | Setup clash pipeline for running clash in an interactive session |
+| `cabal.project` | Cabal configuration |
+| `clash-dev` | Load simple Clash driver pipeline into an interactive GHC session |
 
 #### .ci
 
