@@ -145,3 +145,5 @@
   * Plus optimisations such as DEC
 
 ##### `Clash.Netlist.genNetlist`
+
+##### `Clash.Driver.createHDL`
