@@ -146,4 +146,26 @@
 
 ##### `Clash.Netlist.genNetlist`
 
+  Sets up the Netlist monad to run `Clash.Netlist.genComponent` on the provided
+  module.
+
+###### `Clash.Netlist.genComponentT`
+
+  1. Create wrappers and unwrappers for the arguments and results of
+     topEntity's (or those with `Synthesize` pragma) using
+     `Clash.Netlist.Util.mkUniqueNormalized`
+
+  2. Create net declarations for all the let-binders using `Clash.Netlist.mkNetDecl`
+
+  3. Create net assignments from all the let-bindings using `Clash.Netlist.mkDeclarations`
+
 ##### `Clash.Driver.createHDL`
+
+  1. `Clash.Backend.genHDL`
+
+  Prettyprint a single netlist `Component` to a HDL `DOC`
+
+  2. `Clash.Backend.mkTyPackage`
+
+  Having collected all the types by pretty-printing the netlist `Component`s,
+  create a HDL package with all the relevant type declarations.
