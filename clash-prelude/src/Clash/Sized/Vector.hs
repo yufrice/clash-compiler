@@ -135,7 +135,8 @@ import Clash.Sized.Internal.BitVector (Bit, BitVector, (++#), split#)
 import Clash.Sized.Index          (Index)
 
 import Clash.Class.BitPack (BitPack (..))
-import Clash.XException    (ShowX (..), Undefined (..), showsX, showsPrecXWith)
+import Clash.XException
+  (ShowX (..), Undefined (..), NFDataX (..), showsX, showsPrecXWith, seqX)
 
 {- $setup
 >>> :set -XDataKinds
@@ -199,6 +200,10 @@ infixr 5 `Cons`
 data Vec :: Nat -> Type -> Type where
   Nil  :: Vec 0 a
   Cons :: a -> Vec n a -> Vec (n + 1) a
+
+instance NFDataX a => NFDataX (Vec n a) where
+  rnfX Nil         = ()
+  rnfX (Cons x xs) = rnfX x `seqX` rnfX xs
 
 instance NFData a => NFData (Vec n a) where
   rnf Nil         = ()

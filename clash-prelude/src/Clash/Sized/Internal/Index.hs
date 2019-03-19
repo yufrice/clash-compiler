@@ -94,7 +94,8 @@ import Clash.Class.Num            (ExtendingNum (..), SaturatingNum (..),
 import Clash.Class.Resize         (Resize (..))
 import {-# SOURCE #-} Clash.Sized.Internal.BitVector (BitVector (BV),undefError)
 import Clash.Promoted.Nat         (SNat, snatToNum, leToPlusKN)
-import Clash.XException           (ShowX (..), Undefined (..), errorX, showsPrecXWith)
+import Clash.XException
+  (ShowX (..), Undefined (..), NFDataX (..), errorX, showsPrecXWith, seqX)
 
 -- | Arbitrary-bounded unsigned integer represented by @ceil(log_2(n))@ bits.
 --
@@ -128,6 +129,12 @@ newtype Index (n :: Nat) =
 instance NFData (Index n) where
   rnf (I i) = rnf i `seq` ()
   {-# NOINLINE rnf #-}
+  -- NOINLINE is needed so that Clash doesn't trip on the "Index ~# Integer"
+  -- coercion
+
+instance NFDataX (Index n) where
+  rnfX (I i) = rnfX i `seqX` ()
+  {-# NOINLINE rnfX #-}
   -- NOINLINE is needed so that Clash doesn't trip on the "Index ~# Integer"
   -- coercion
 

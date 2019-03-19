@@ -107,7 +107,8 @@ import Clash.Prelude.BitIndex         ((!), msb, replaceBit, split)
 import Clash.Prelude.BitReduction     (reduceAnd, reduceOr)
 import Clash.Sized.Internal.BitVector (BitVector (BV), Bit, (++#), high, low, undefError)
 import qualified Clash.Sized.Internal.BitVector as BV
-import Clash.XException               (ShowX (..), Undefined (..), errorX, showsPrecXWith)
+import Clash.XException
+  (ShowX (..), Undefined (..), NFDataX (..), errorX, showsPrecXWith, rwhnfX)
 
 -- | Arbitrary-width signed integer represented by @n@ bits, including the sign
 -- bit.
@@ -150,6 +151,7 @@ newtype Signed (n :: Nat) =
     S { unsafeToInteger :: Integer}
   deriving Data
 
+instance NFDataX (Signed n) where rnfX = rwhnfX
 instance Undefined (Signed n) where deepErrorX = errorX
 
 {-# NOINLINE size# #-}

@@ -80,7 +80,7 @@ import Clash.Promoted.Nat.Literals (d1)
 import Clash.Sized.Index           (Index)
 import Clash.Sized.Vector          (Vec (..), (!!), (++), dtfold, replace)
 import Clash.XException
-  (ShowX (..), Undefined (..), showsX, showsPrecXWith)
+  (ShowX (..), Undefined (..), NFDataX (..), seqX, showsX, showsPrecXWith)
 
 {- $setup
 >>> :set -XDataKinds
@@ -114,6 +114,10 @@ data RTree :: Nat -> Type -> Type where
 instance NFData a => NFData (RTree d a) where
     rnf (LR_ x) = rnf x
     rnf (BR_ l r ) = rnf l `seq` rnf r
+
+instance NFDataX a => NFDataX (RTree d a) where
+    rnfX (LR_ x) = rnfX x
+    rnfX (BR_ l r ) = rnfX l `seqX` rnfX r
 
 textract :: RTree 0 a -> a
 textract (LR_ x)   = x

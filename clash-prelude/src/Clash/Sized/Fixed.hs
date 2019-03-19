@@ -98,7 +98,8 @@ import Clash.Prelude.BitReduction (reduceAnd, reduceOr)
 import Clash.Sized.BitVector      (BitVector, (++#))
 import Clash.Sized.Signed         (Signed)
 import Clash.Sized.Unsigned       (Unsigned)
-import Clash.XException           (ShowX (..), Undefined (..), errorX, showsPrecXWith)
+import Clash.XException
+  (ShowX (..), Undefined (..), NFDataX (..), errorX, showsPrecXWith)
 
 {- $setup
 >>> :set -XDataKinds
@@ -123,6 +124,7 @@ newtype Fixed (rep :: Nat -> *) (int :: Nat) (frac :: Nat) =
   Fixed { unFixed :: rep (int + frac) }
 
 deriving instance NFData (rep (int + frac)) => NFData (Fixed rep int frac)
+deriving instance NFDataX (rep (int + frac)) => NFDataX (Fixed rep int frac)
 deriving instance (Typeable rep, Typeable int, Typeable frac
                   , Data (rep (int + frac))) => Data (Fixed rep int frac)
 deriving instance Eq (rep (int + frac))      => Eq (Fixed rep int frac)
@@ -268,7 +270,7 @@ instance ( size ~ (int + frac), KnownNat frac, Integral (rep size)
          ) => ShowX (Fixed rep int frac) where
   showsPrecX = showsPrecXWith showsPrec
 
-instance Undefined (Fixed rep int frac) where deepErrorX = Fixed . errorX
+instance NFDataX (Fixed rep int frac) => Undefined (Fixed rep int frac) where deepErrorX = Fixed . errorX
 
 -- | None of the 'Read' class' methods are synthesisable.
 instance (size ~ (int + frac), KnownNat frac, Bounded (rep size), Integral (rep size))

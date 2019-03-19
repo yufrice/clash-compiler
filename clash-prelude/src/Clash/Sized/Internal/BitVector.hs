@@ -149,7 +149,7 @@ import Clash.Class.Num            (ExtendingNum (..), SaturatingNum (..),
 import Clash.Class.Resize         (Resize (..))
 import Clash.Promoted.Nat         (SNat, snatToInteger, snatToNum)
 import Clash.XException
-  (ShowX (..), Undefined (..), errorX, showsPrecXWith)
+  (ShowX (..), Undefined (..), NFDataX (..), errorX, showsPrecXWith, rwhnfX)
 
 import {-# SOURCE #-} qualified Clash.Sized.Vector         as V
 import {-# SOURCE #-} qualified Clash.Sized.Internal.Index as I
@@ -212,6 +212,7 @@ instance Show Bit where
 instance ShowX Bit where
   showsPrecX = showsPrecXWith showsPrec
 
+instance NFDataX Bit where rnfX = rwhnfX
 instance Undefined Bit where deepErrorX = errorX
 
 instance Lift Bit where
@@ -356,6 +357,7 @@ instance KnownNat n => Show (BitVector n) where
 instance KnownNat n => ShowX (BitVector n) where
   showsPrecX = showsPrecXWith showsPrec
 
+instance NFDataX (BitVector n) where rnfX = rwhnfX
 instance Undefined (BitVector n) where deepErrorX = errorX
 
 -- | Create a binary literal

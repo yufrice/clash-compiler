@@ -11,6 +11,8 @@ import Data.Word
 import Control.Monad.RWS
 import Data.Monoid
 
+import Clash.XException (NFDataX)
+
 {-# NOINLINE topEntity #-}
 topEntity
     :: Clock System Source
@@ -31,7 +33,7 @@ data Phase
     = Init
     | Fetch1
     | Exec
-    deriving (Generic, Undefined)
+    deriving (Generic, NFDataX, Undefined)
 
 data CPUIn = CPUIn
     { cpuInMem :: Word8
@@ -41,7 +43,7 @@ data CPUState = CPUState
     { pc :: Word8
     , phase :: Phase
     }
-    deriving (Generic, Undefined)
+    deriving (Generic, NFDataX, Undefined)
 
 initState :: CPUState
 initState = CPUState

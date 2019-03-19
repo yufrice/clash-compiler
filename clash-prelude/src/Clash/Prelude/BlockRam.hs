@@ -44,7 +44,7 @@ data Reg
   | RegC
   | RegD
   | RegE
-  deriving (Eq,Show,Enum,Generic,Undefined)
+  deriving (Eq,Show,Enum,Generic,NFDataX,Undefined)
 
 data Operator = Add | Sub | Incr | Imm | CmpGt
   deriving (Eq,Show)
@@ -386,7 +386,7 @@ data Reg
   | RegC
   | RegD
   | RegE
-  deriving (Eq,Show,Enum,C.Generic,Undefined)
+  deriving (Eq,Show,Enum,C.Generic,NFDataX,Undefined)
 :}
 
 >>> :{

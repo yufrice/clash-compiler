@@ -103,7 +103,7 @@ import Test.QuickCheck            (Arbitrary (..), CoArbitrary(..), Property,
 
 import Clash.Promoted.Nat         (SNat (..), snatToInteger, snatToNum)
 import Clash.Promoted.Symbol      (SSymbol (..))
-import Clash.XException           (Undefined (..), errorX, maybeX, seqX)
+import Clash.XException           (Undefined (..), errorX, maybeHasX, seqX)
 
 {- $setup
 >>> :set -XDataKinds
@@ -569,7 +569,7 @@ delay# (GatedClock _ _ en) =
     go (withFrozenCallStack (deepErrorX "delay: initial value undefined")) en
   where
     go o (e :- es) as@(~(x :- xs)) =
-      let o' = case maybeX e of
+      let o' = case maybeHasX e of
                  Just True  -> x
                  Just False -> o
                  Nothing    -> deepErrorX "delay: undefined clock enable"
@@ -605,7 +605,7 @@ register# (GatedClock _ _ ena) (Sync rst)  i =
     go (withFrozenCallStack (deepErrorX "register: initial value undefined")) rst ena
   where
     go o rt@(~(r :- rs)) enas@(~(e :- es)) as@(~(x :- xs)) =
-      let oE = case maybeX e of
+      let oE = case maybeHasX e of
                  Just True  -> x
                  Just False -> o
                  Nothing    -> deepErrorX "register: undefined clock enable"
@@ -618,7 +618,7 @@ register# (GatedClock _ _ ena) (Async rst) i =
   where
     go o (r :- rs) enas@(~(e :- es)) as@(~(x :- xs)) =
       let oR = if r then i else o
-          oE = if r then i else case maybeX e of
+          oE = if r then i else case maybeHasX e of
                  Just True  -> x
                  Just False -> o
                  Nothing    -> deepErrorX "register: undefined clock enable"

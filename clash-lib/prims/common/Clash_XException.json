@@ -12,4 +12,11 @@
     , "template"  : "~ERRORO"
     }
   }
+, { "BlackBox" :
+     { "name"      : "Clash.XException.deepseqX"
+     , "kind"      : "Expression"
+     , "type"      : "deepseqX :: NFDataX a => a -> b -> b"
+     , "template"  : "~ARG[2]"
+     }
+  }
 ]

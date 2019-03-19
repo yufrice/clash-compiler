@@ -403,7 +403,7 @@ import Clash.Signal.Internal
 import Clash.Signal.Bundle    (unbundle)
 import Clash.Sized.Unsigned   (Unsigned)
 import Clash.Sized.Vector     (Vec, toList)
-import Clash.XException       (Undefined, errorX, maybeX, seqX)
+import Clash.XException       (Undefined, maybeHasX, seqX, errorX)
 
 {- $setup
 >>> import Clash.Explicit.Prelude as C
@@ -421,7 +421,7 @@ data Reg
   | RegC
   | RegD
   | RegE
-  deriving (Eq,Show,Enum,C.Generic,Undefined)
+  deriving (Eq,Show,Enum,C.Generic,NFDataX,Undefined)
 :}
 
 >>> :{
@@ -774,11 +774,11 @@ blockRam# clk content rd wen = case clockEnable clk of
           o'   = if re then ram V.! r else o
       in  o `seqX` o :- (ret `seq` rt `seq` et `seq` wt `seq` dt `seq` go' ram' o' res rs en wr din)
 
-    upd ram we waddr d = case maybeX we of
-      Nothing -> case maybeX waddr of
+    upd ram we waddr d = case maybeHasX we of
+      Nothing -> case maybeHasX waddr of
         Nothing -> V.map (const (seq waddr d)) ram
         Just wa -> ram V.// [(wa,d)]
-      Just True -> case maybeX waddr of
+      Just True -> case maybeHasX waddr of
         Nothing -> V.map (const (seq waddr d)) ram
         Just wa -> ram V.// [(wa,d)]
       _ -> ram

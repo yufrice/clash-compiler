@@ -1,6 +1,7 @@
 {-|
-Copyright  :  (C) 2016, University of Twente,
-                  2017, Myrtle Software Ltd, QBayLogic, Google Inc.
+Copyright  :  (C) 2016,      University of Twente,
+                  2017,      QBayLogic, Google Inc.
+                  2017-2019, Myrtle Software Ltd
 License    :  BSD2 (see the file LICENSE)
 Maintainer :  Christiaan Baaij <christiaan.baaij@gmail.com>
 
@@ -14,14 +15,17 @@ CallStack (from HasCallStack):
 "(X,4)"
 -}
 
-{-# LANGUAGE DefaultSignatures   #-}
-{-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE FlexibleInstances   #-}
-{-# LANGUAGE MagicHash           #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving  #-}
-{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE DefaultSignatures     #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE EmptyCase             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE MagicHash             #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE StandaloneDeriving    #-}
+{-# LANGUAGE TypeOperators         #-}
 
 {-# LANGUAGE Trustworthy #-}
 
@@ -29,11 +33,11 @@ CallStack (from HasCallStack):
 
 module Clash.XException
   ( -- * 'X': An exception for uninitialized values
-    XException, errorX, isX, maybeX
+    XException, errorX, isX, hasX, maybeIsX, maybeHasX
     -- * Printing 'X' exceptions as \"X\"
   , ShowX (..), showsX, printX, showsPrecXWith
     -- * Strict evaluation
-  , seqX
+  , NFDataX, seqX, forceX, deepseqX, rnfX, rwhnfX
     -- * Structured undefined
   , Undefined (..)
   )
@@ -41,12 +45,12 @@ where
 
 import Control.Exception (Exception, catch, evaluate, throw)
 import Control.DeepSeq   (NFData, rnf)
-import Data.Complex      (Complex)
+import Data.Complex      (Complex((:+)))
 import Data.Foldable     (toList)
 import Data.Int          (Int8,Int16,Int32,Int64)
 import Data.Ord          (Down (Down))
-import Data.Ratio        (Ratio)
-import Data.Sequence     (Seq)
+import Data.Ratio        (Ratio, numerator, denominator)
+import Data.Sequence     (Seq(Empty, (:<|)))
 import Data.Word         (Word8,Word16,Word32,Word64)
 import GHC.Exts          (Char (C#), Double (D#), Float (F#), Int (I#), Word (W#))
 import GHC.Generics
@@ -84,22 +88,76 @@ seqX a b = unsafeDupablePerformIO
 {-# NOINLINE seqX #-}
 infixr 0 `seqX`
 
--- | Fully evaluate a value, returning 'Nothing' if is throws 'XException'.
+-- | Evaluate a value with given function, returning 'Nothing' if it throws
+-- 'XException'.
 --
--- > maybeX 42               = Just 42
--- > maybeX (XException msg) = Nothing
--- > maybeX _|_              = _|_
-maybeX :: NFData a => a -> Maybe a
-maybeX = either (const Nothing) Just . isX
+-- > maybeX hasX 42                  = Just 42
+-- > maybeX hasX (XException msg)    = Nothing
+-- > maybeX hasX (3, XException msg) = Nothing
+-- > maybeX hasX (3, _|_)            = _|_
+-- > maybeX hasX _|_                 = _|_
+-- >
+-- > maybeX isX 42                  = Just 42
+-- > maybeX isX (XException msg)    = Nothing
+-- > maybeX isX (3, XException msg) = Just (3, XException msg)
+-- > maybeX isX (3, _|_)            = Just (3, _|_)
+-- > maybeX isX _|_                 = _|_
+--
+maybeX :: NFData a => (a -> Either String a) -> a -> Maybe a
+maybeX f a = either (const Nothing) Just (f a)
 
--- | Fully evaluate a value, returning @'Left' msg@ if is throws 'XException'.
+-- | Fully evaluate a value, returning 'Nothing' if it throws 'XException'.
 --
--- > isX 42               = Right 42
--- > isX (XException msg) = Left msg
--- > isX _|_              = _|_
+-- > maybeX 42                  = Just 42
+-- > maybeX (XException msg)    = Nothing
+-- > maybeX (3, XException msg) = Nothing
+-- > maybeX (3, _|_)            = _|_
+-- > maybeX _|_                 = _|_
+--
+maybeHasX :: NFData a => a -> Maybe a
+maybeHasX = maybeX hasX
+
+-- | Evaluate a value to WHNF, returning 'Nothing' if it throws 'XException'.
+--
+-- > maybeIsX 42                  = Just 42
+-- > maybeIsX (XException msg)    = Nothing
+-- > maybeIsX (3, XException msg) = Just (3, XException msg)
+-- > maybeIsX (3, _|_)            = Just (3, _|_)
+-- > maybeIsX _|_                 = _|_
+maybeIsX :: NFData a => a -> Maybe a
+maybeIsX = maybeX isX
+
+-- | Fully evaluate a value, returning @'Left' msg@ if it throws 'XException'.
+--
+-- > hasX 42                  = Right 42
+-- > hasX (XException msg)    = Left msg
+-- > hasX (3, XException msg) = Left msg
+-- > hasX (3, _|_)            = _|_
+-- > hasX _|_                 = _|_
+--
+-- If a data structure contains multiple 'XException's, the "first" message is
+-- picked according to the implementation of 'rnf'.
+hasX :: NFData a => a -> Either String a
+hasX a =
+  unsafeDupablePerformIO
+    (catch
+      (evaluate (rnf a) >> return (Right a))
+      (\(XException msg) -> return (Left msg)))
+{-# NOINLINE hasX #-}
+
+-- | Evaluate a value to WHNF, returning @'Left' msg@ if is a 'XException'.
+--
+-- > isX 42                  = Right 42
+-- > isX (XException msg)    = Left msg
+-- > isX (3, XException msg) = Right (3, XException msg)
+-- > isX (3, _|_)            = (3, _|_)
+-- > isX _|_                 = _|_
 isX :: NFData a => a -> Either String a
-isX a = unsafeDupablePerformIO
-  (catch (evaluate (rnf a) >> return (Right a)) (\(XException msg) -> return (Left msg)))
+isX a =
+  unsafeDupablePerformIO
+    (catch
+      (evaluate a >> return (Right a))
+      (\(XException msg) -> return (Left msg)))
 {-# NOINLINE isX #-}
 
 showXWith :: (a -> ShowS) -> a -> ShowS
@@ -374,9 +432,286 @@ instance GShowX UInt where
 instance GShowX UWord where
   gshowsPrecX _ _ (UWord w)   = showsPrec 0 (W# w) . showString "##"
 
+-- | a variant of 'deepseqX' that is useful in some circumstances:
+--
+-- > forceX x = x `deepseqX` x
+forceX :: NFDataX a => a -> a
+forceX x = x `deepseqX` x
+{-# INLINE forceX #-}
+
+-- | 'deepseqX': fully evaluates the first argument, before returning the
+-- second. Does not propagate 'XException's.
+deepseqX :: NFDataX a => a -> b -> b
+deepseqX a b = rnfX a `seqX` b
+{-# NOINLINE deepseqX #-}
+
+-- | Reduce to weak head normal form
+--
+-- Equivalent to @\\x -> 'seqX' x ()@.
+--
+-- Useful for defining 'NFDataX' for types for which NF=WHNF holds.
+rwhnfX :: a -> ()
+rwhnfX = (`seqX` ())
+{-# INLINE rwhnfX #-}
+
+-- | Same as 'NFData', but does not propagate 'XException's.
+class NFDataX a where
+  rnfX :: a -> ()
+
+  default rnfX :: (Generic a, GNFDataX Zero (Rep a)) => a -> ()
+  rnfX = grnfX RnfArgs0 . from
+
+-- | Hidden internal type-class
+class GNFDataX arity f where
+  grnfX :: RnfArgs arity a -> f a -> ()
+
+instance GNFDataX arity V1 where
+  grnfX _ x = case x of {}
+
+data Zero
+data One
+
+data RnfArgs arity a where
+  RnfArgs0 :: RnfArgs Zero a
+  RnfArgs1  :: (a -> ()) -> RnfArgs One a
+
+instance GNFDataX arity U1 where
+  grnfX _ U1 = ()
+
+instance NFDataX a => GNFDataX arity (K1 i a) where
+  grnfX _ = rnfX . unK1
+  {-# INLINEABLE grnfX #-}
+
+instance GNFDataX arity a => GNFDataX arity (M1 i c a) where
+  grnfX args = grnfX args . unM1
+  {-# INLINEABLE grnfX #-}
+
+instance (GNFDataX arity a, GNFDataX arity b) => GNFDataX arity (a :*: b) where
+  grnfX args (x :*: y) = grnfX args x `seqX` grnfX args y
+  {-# INLINEABLE grnfX #-}
+
+instance (GNFDataX arity a, GNFDataX arity b) => GNFDataX arity (a :+: b) where
+  grnfX args (L1 x) = grnfX args x
+  grnfX args (R1 x) = grnfX args x
+  {-# INLINEABLE grnfX #-}
+
+instance GNFDataX One Par1 where
+  grnfX (RnfArgs1 r) = r . unPar1
+
+instance NFDataX1 f => GNFDataX One (Rec1 f) where
+  grnfX (RnfArgs1 r) = liftRnfX r . unRec1
+
+instance (NFDataX1 f, GNFDataX One g) => GNFDataX One (f :.: g) where
+  grnfX args = liftRnfX (grnfX args) . unComp1
+
+-- | A class of functors that can be fully evaluated, according to semantics
+-- of NFDataX.
+class NFDataX1 f where
+  -- | 'liftRnfX' should reduce its argument to normal form (that is, fully
+  -- evaluate all sub-components), given an argument to reduce @a@ arguments,
+  -- and then return '()'.
+  --
+  -- See 'rnfX' for the generic deriving.
+  liftRnfX :: (a -> ()) -> f a -> ()
+
+  default liftRnfX :: (Generic1 f, GNFDataX One (Rep1 f)) => (a -> ()) -> f a -> ()
+  liftRnfX r = grnfX (RnfArgs1 r) . from1
+
+rnfX1 :: (NFDataX1 f, NFDataX a) => f a -> ()
+rnfX1 = liftRnfX rnfX
+
+-- | A class of bifunctors that can be fully evaluated, according to semantics
+-- of NFDataX.
+class NFDataX2 p where
+  -- | 'liftRnfX2' should reduce its argument to normal form (that
+  -- is, fully evaluate all sub-components), given functions to
+  -- reduce @a@ and @b@ arguments respectively, and then return '()'.
+  --
+  -- __Note__: Unlike for the unary 'liftRnfX', there is currently no
+  -- support for generically deriving 'liftRnfX2'.
+  liftRnfX2 :: (a -> ()) -> (b -> ()) -> p a b -> ()
+
+-- | Lift the standard 'rnf' function through the type constructor.
+rnfX2 :: (NFDataX2 p, NFDataX a, NFDataX b) => p a b -> ()
+rnfX2 = liftRnfX2 rnfX rnfX
+
+instance NFDataX Int      where rnfX = rwhnfX
+instance NFDataX Word     where rnfX = rwhnfX
+instance NFDataX Integer  where rnfX = rwhnfX
+instance NFDataX Float    where rnfX = rwhnfX
+instance NFDataX Double   where rnfX = rwhnfX
+
+instance NFDataX Char     where rnfX = rwhnfX
+instance NFDataX Bool     where rnfX = rwhnfX
+instance NFDataX Ordering where rnfX = rwhnfX
+instance NFDataX ()       where rnfX = rwhnfX
+
+instance NFDataX Int8     where rnfX = rwhnfX
+instance NFDataX Int16    where rnfX = rwhnfX
+instance NFDataX Int32    where rnfX = rwhnfX
+instance NFDataX Int64    where rnfX = rwhnfX
+
+instance NFDataX Word8    where rnfX = rwhnfX
+instance NFDataX Word16   where rnfX = rwhnfX
+instance NFDataX Word32   where rnfX = rwhnfX
+instance NFDataX Word64   where rnfX = rwhnfX
+
+instance NFDataX Natural  where rnfX = rwhnfX
+
+instance NFDataX (a -> b) where rnfX = rwhnfX
+
+instance NFDataX1 Ratio where
+  liftRnfX r x = r (numerator x) `seqX` r (denominator x)
+
+instance NFDataX a => NFDataX (Ratio a) where
+  rnfX x = rnfX (numerator x, denominator x)
+
+instance NFDataX a => NFDataX (Seq a) where rnfX = rnfX1
+instance NFDataX1 Seq where
+  liftRnfX r = go
+    where
+      go Empty = ()
+      go (x :<| xs) = r x `seqX` go xs
+
+instance NFDataX a => NFDataX [a] where rnfX = rnfX1
+instance NFDataX1 [] where
+  liftRnfX r = go
+    where
+      go [] = ()
+      go (x:xs) = r x `seqX` go xs
+
+instance (NFDataX a) => NFDataX (Complex a) where
+  rnfX (x:+y) = rnfX x `seqX`
+                rnfX y `seqX`
+                ()
+
+instance NFDataX a => NFDataX (Maybe a) where rnfX = rnfX1
+instance NFDataX1 Maybe where
+  liftRnfX _r Nothing  = ()
+  liftRnfX  r (Just x) = r x
+
+instance (NFDataX a, NFDataX b) => NFDataX (Either a b) where rnfX = rnfX1
+instance (NFDataX a) => NFDataX1 (Either a) where liftRnfX = liftRnfX2 rnfX
+instance NFDataX2 Either where
+  liftRnfX2  l _r (Left x)  = l x
+  liftRnfX2 _l  r (Right y) = r y
+
+
+instance NFDataX a => NFDataX (Down a) where rnfX = rnfX1
+instance NFDataX1 Down where liftRnfX r (Down x) = r x
+
+instance (NFDataX a, NFDataX b) => NFDataX (a,b) where rnfX = rnfX2
+instance (NFDataX a) => NFDataX1 ((,) a) where liftRnfX = liftRnfX2 rnfX
+instance NFDataX2 (,) where
+  liftRnfX2 r r' (x,y) = r x `seqX` r' y
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3) =>
+         NFDataX (a1, a2, a3) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2) =>
+         NFDataX1 ((,,) a1 a2) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1) =>
+         NFDataX2 ((,,) a1) where
+  liftRnfX2 r r' (x1,x2,x3) = rnfX x1 `seqX` r x2 `seqX` r' x3
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4) =>
+         NFDataX (a1, a2, a3, a4) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3) =>
+         NFDataX1 ((,,,) a1 a2 a3) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2) =>
+         NFDataX2 ((,,,) a1 a2) where
+  liftRnfX2 r r' (x1,x2,x3,x4) = rnfX x1 `seqX` rnfX x2 `seqX` r x3 `seqX` r' x4
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5) =>
+         NFDataX (a1, a2, a3, a4, a5) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4) =>
+         NFDataX1 ((,,,,) a1 a2 a3 a4) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3) =>
+         NFDataX2 ((,,,,) a1 a2 a3) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` r x4 `seqX` r' x5
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6) =>
+         NFDataX (a1, a2, a3, a4, a5, a6) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5) =>
+         NFDataX1 ((,,,,,) a1 a2 a3 a4 a5) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4) =>
+         NFDataX2 ((,,,,,) a1 a2 a3 a4) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` r x5 `seqX` r' x6
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6) =>
+         NFDataX1 ((,,,,,,) a1 a2 a3 a4 a5 a6) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5) =>
+         NFDataX2 ((,,,,,,) a1 a2 a3 a4 a5) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` r x6 `seqX` r' x7
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7) =>
+         NFDataX1 ((,,,,,,,) a1 a2 a3 a4 a5 a6 a7) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6) =>
+         NFDataX2 ((,,,,,,,) a1 a2 a3 a4 a5 a6) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` r x7 `seqX` r' x8
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8) =>
+         NFDataX1 ((,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7) =>
+         NFDataX2 ((,,,,,,,,) a1 a2 a3 a4 a5 a6 a7) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` r x8 `seqX` r' x9
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9) =>
+         NFDataX1 ((,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8) =>
+         NFDataX2 ((,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` r x9 `seqX` r' x10
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10) =>
+         NFDataX1 ((,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9) =>
+         NFDataX2 ((,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` r x10 `seqX` r' x11
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11) =>
+         NFDataX1 ((,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10) =>
+         NFDataX2 ((,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` rnfX x10 `seqX` r x11 `seqX` r' x12
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12) =>
+         NFDataX1 ((,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11) =>
+         NFDataX2 ((,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` rnfX x10 `seqX` rnfX x11 `seqX` r x12 `seqX` r' x13
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13, NFDataX a14) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13) =>
+         NFDataX1 ((,,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12) =>
+         NFDataX2 ((,,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` rnfX x10 `seqX` rnfX x11 `seqX` rnfX x12 `seqX` r x13 `seqX` r' x14
+
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13, NFDataX a14, NFDataX a15) =>
+         NFDataX (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15) where rnfX = rnfX2
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13, NFDataX a14) =>
+         NFDataX1 ((,,,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14) where liftRnfX = liftRnfX2 rnfX
+instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6, NFDataX a7, NFDataX a8, NFDataX a9, NFDataX a10, NFDataX a11, NFDataX a12, NFDataX a13) =>
+         NFDataX2 ((,,,,,,,,,,,,,,) a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13) where
+  liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14,x15) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` rnfX x10 `seqX` rnfX x11 `seqX` rnfX x12 `seqX` rnfX x13 `seqX` r x14 `seqX` r' x15
+
 -- | Create a value where all the elements have an 'errorX', but the spine
 -- is defined.
-class Undefined a where
+class NFDataX a => Undefined a where
   -- | Create a value where all the elements have an 'errorX', but the spine
   -- is defined.
   deepErrorX :: HasCallStack => String -> a
@@ -431,9 +766,9 @@ instance Undefined a => Undefined (Down a) where
   deepErrorX = Down . deepErrorX
 
 instance Undefined Bool
-instance Undefined [a]
-instance Undefined (Either a b)
-instance Undefined (Maybe a)
+instance NFDataX a => Undefined [a]
+instance (NFDataX a, NFDataX b) => Undefined (Either a b)
+instance NFDataX a => Undefined (Maybe a)
 
 instance Undefined Char where deepErrorX = errorX
 instance Undefined Double where deepErrorX = errorX
@@ -450,9 +785,9 @@ instance Undefined Word8 where deepErrorX = errorX
 instance Undefined Word16 where deepErrorX = errorX
 instance Undefined Word32 where deepErrorX = errorX
 instance Undefined Word64 where deepErrorX = errorX
-instance Undefined (Seq a) where deepErrorX = errorX
-instance Undefined (Ratio a) where deepErrorX = errorX
-instance Undefined (Complex a) where deepErrorX = errorX
+instance NFDataX a => Undefined (Seq a) where deepErrorX = errorX
+instance NFDataX a => Undefined (Ratio a) where deepErrorX = errorX
+instance NFDataX a => Undefined (Complex a) where deepErrorX = errorX
 
 class GUndefined f where
   gDeepErrorX :: HasCallStack => String -> f a
