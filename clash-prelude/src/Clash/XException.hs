@@ -15,6 +15,7 @@ CallStack (from HasCallStack):
 "(X,4)"
 -}
 
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DefaultSignatures     #-}
 {-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE EmptyCase             #-}
@@ -37,7 +38,7 @@ module Clash.XException
     -- * Printing 'X' exceptions as \"X\"
   , ShowX (..), showsX, printX, showsPrecXWith
     -- * Strict evaluation
-  , NFDataX, seqX, forceX, deepseqX, rnfX, rwhnfX
+  , NFDataX, seqX, forceX, deepseqX, rnfX, rwhnfX, defaultSeqX
     -- * Structured undefined
   , Undefined (..)
   )
@@ -66,6 +67,17 @@ instance Show XException where
   show (XException s) = s
 
 instance Exception XException
+
+-- | Either 'seqX' or 'deepSeqX' depending on the value of the cabal flag
+-- '-fsuper-strict'. If enabled, 'defaultSeqX' will be 'deepseqX', otherwise
+-- 'seqX'. Flag defaults to /false/ and thus 'seqX'.
+defaultSeqX :: NFDataX a => a -> b -> b
+#ifdef CLASH_SUPER_STRICT
+defaultSeqX = deepseqX
+#else
+defaultSeqX = seqX
+#endif
+{-# INLINE defaultSeqX #-}
 
 -- | Like 'error', but throwing an 'XException' instead of an 'ErrorCall'
 --
@@ -710,7 +722,8 @@ instance (NFDataX a1, NFDataX a2, NFDataX a3, NFDataX a4, NFDataX a5, NFDataX a6
   liftRnfX2 r r' (x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14,x15) = rnfX x1 `seqX` rnfX x2 `seqX` rnfX x3 `seqX` rnfX x4 `seqX` rnfX x5 `seqX` rnfX x6 `seqX` rnfX x7 `seqX` rnfX x8 `seqX` rnfX x9 `seqX` rnfX x10 `seqX` rnfX x11 `seqX` rnfX x12 `seqX` rnfX x13 `seqX` r x14 `seqX` r' x15
 
 -- | Create a value where all the elements have an 'errorX', but the spine
--- is defined.
+-- is defined. Undefined has a superclass NFDataX to support seamless switching
+-- between strictness modes in clash-prelude.
 class NFDataX a => Undefined a where
   -- | Create a value where all the elements have an 'errorX', but the spine
   -- is defined.

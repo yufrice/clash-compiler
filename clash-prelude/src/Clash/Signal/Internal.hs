@@ -103,7 +103,7 @@ import Test.QuickCheck            (Arbitrary (..), CoArbitrary(..), Property,
 
 import Clash.Promoted.Nat         (SNat (..), snatToInteger, snatToNum)
 import Clash.Promoted.Symbol      (SSymbol (..))
-import Clash.XException           (Undefined (..), errorX, maybeHasX, seqX)
+import Clash.XException           (Undefined (..), errorX, maybeHasX, defaultSeqX)
 
 {- $setup
 >>> :set -XDataKinds
@@ -574,7 +574,7 @@ delay# (GatedClock _ _ en) =
                  Just False -> o
                  Nothing    -> deepErrorX "delay: undefined clock enable"
       -- See [Note: register strictness annotations]
-      in  o `seqX` o :- (as `seq` go o' es xs)
+      in  o `defaultSeqX` o :- (as `seq` go o' es xs)
 {-# NOINLINE delay# #-}
 
 register#
@@ -590,7 +590,7 @@ register# Clock {} (Sync rst) i =
     go o rt@(~(r :- rs)) as@(~(x :- xs)) =
       let o' = if r then i else x
           -- [Note: register strictness annotations]
-      in  o `seqX` o :- (rt `seq` as `seq` go o' rs xs)
+      in  o `defaultSeqX` o :- (rt `seq` as `seq` go o' rs xs)
 
 register# Clock {} (Async rst) i =
     go (withFrozenCallStack (deepErrorX "register: initial value undefined")) rst
@@ -599,7 +599,7 @@ register# Clock {} (Async rst) i =
       let o1 = if r then i else o0
           oN = if r then i else x
           -- [Note: register strictness annotations]
-      in  o1 `seqX` o1 :- (as `seq` go oN rs xs)
+      in  o1 `defaultSeqX` o1 :- (as `seq` go oN rs xs)
 
 register# (GatedClock _ _ ena) (Sync rst)  i =
     go (withFrozenCallStack (deepErrorX "register: initial value undefined")) rst ena
@@ -611,7 +611,7 @@ register# (GatedClock _ _ ena) (Sync rst)  i =
                  Nothing    -> deepErrorX "register: undefined clock enable"
           oR = if r then i else oE
           -- [Note: register strictness annotations]
-      in  o `seqX` o :- (rt `seq` enas `seq` as `seq` go oR rs es xs)
+      in  o `defaultSeqX` o :- (rt `seq` enas `seq` as `seq` go oR rs es xs)
 
 register# (GatedClock _ _ ena) (Async rst) i =
     go (withFrozenCallStack (deepErrorX "register: initial value undefined")) rst ena
@@ -623,7 +623,7 @@ register# (GatedClock _ _ ena) (Async rst) i =
                  Just False -> o
                  Nothing    -> deepErrorX "register: undefined clock enable"
           -- [Note: register strictness annotations]
-      in  oR `seqX` oR :- (as `seq` enas `seq` go oE rs es xs)
+      in  oR `defaultSeqX` oR :- (as `seq` enas `seq` go oE rs es xs)
 {-# NOINLINE register# #-}
 
 {-# INLINE mux #-}
@@ -744,7 +744,7 @@ testFor n = property . and . take n . sample
 --
 -- __NB__: This function is not synthesisable
 sample :: (Foldable f, NFData a) => f a -> [a]
-sample = foldr (\a b -> rnf a `seqX` (a : b)) []
+sample = foldr (\a b -> rnf a `defaultSeqX` (a : b)) []
 
 -- | The above type is a generalisation for:
 --
@@ -773,7 +773,7 @@ sampleN n = take n . sample
 --
 -- __NB__: This function is not synthesisable
 fromList :: NFData a => [a] -> Signal domain a
-fromList = Prelude.foldr (\a b -> rnf a `seqX` (a :- b)) (errorX "finite list")
+fromList = Prelude.foldr (\a b -> rnf a `defaultSeqX` (a :- b)) (errorX "finite list")
 
 -- * Simulation functions (not synthesisable)
 
