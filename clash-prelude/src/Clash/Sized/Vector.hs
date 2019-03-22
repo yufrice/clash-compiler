@@ -94,7 +94,7 @@ module Clash.Sized.Vector
   , bv2v
   , v2bv
     -- * Misc
-  , lazyV, VCons, asNatProxy
+  , lazyV, VCons, asNatProxy, seqV, forceV
     -- * Primitives
     -- ** 'Traversable' instance
   , traverse#
@@ -2121,6 +2121,27 @@ bv2v = unpack
 -- 0001_0010
 v2bv :: KnownNat n => Vec n Bit -> BitVector n
 v2bv = pack
+
+-- | Evaluate all elements of a vector to WHNF, returning the second argument
+seqV
+  :: KnownNat n
+  => Vec n a
+  -> b
+  -> b
+seqV v b =
+  let s () e = seq e () in
+  foldl s () v `seq` b
+{-# NOINLINE seqV #-}
+infixr 0 `seqV`
+
+-- | Evaluate all elements of a vector to WHNF
+forceV
+  :: KnownNat n
+  => Vec n a
+  -> Vec n a
+forceV v =
+  v `seqV` v
+{-# INLINE forceV #-}
 
 instance Lift a => Lift (Vec n a) where
   lift Nil           = [| Nil |]
