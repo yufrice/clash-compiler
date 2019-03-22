@@ -14,5 +14,13 @@
       "type": "seqV :: KnownNat n => Vec n a -> b -> b",
       "template": "~ARG[2]"
     }
+  },
+  {
+    "BlackBox": {
+      "name": "Clash.Sized.Vector.seqVX",
+      "kind": "Expression",
+      "type": "seqVX :: KnownNat n => Vec n a -> b -> b",
+      "template": "~ARG[2]"
+    }
   }
 ]
