@@ -51,6 +51,7 @@ import Data.Foldable     (toList)
 import Data.Int          (Int8,Int16,Int32,Int64)
 import Data.Ord          (Down (Down))
 import Data.Ratio        (Ratio, numerator, denominator)
+import qualified Data.Semigroup as SG
 import Data.Sequence     (Seq(Empty, (:<|)))
 import Data.Word         (Word8,Word16,Word32,Word64)
 import GHC.Exts          (Char (C#), Double (D#), Float (F#), Int (I#), Word (W#))
@@ -572,6 +573,19 @@ instance NFDataX Natural  where rnfX = rwhnfX
 
 instance NFDataX (a -> b) where rnfX = rwhnfX
 
+instance (NFDataX a, NFDataX b) => NFDataX (SG.Arg a b)
+instance NFDataX (SG.All)
+instance NFDataX (SG.Any)
+instance NFDataX a => NFDataX (SG.Dual a)
+instance NFDataX a => NFDataX (SG.Endo a)
+instance NFDataX a => NFDataX (SG.First a)
+instance NFDataX a => NFDataX (SG.Last a)
+instance NFDataX a => NFDataX (SG.Max a)
+instance NFDataX a => NFDataX (SG.Min a)
+instance NFDataX a => NFDataX (SG.Option a)
+instance NFDataX a => NFDataX (SG.Product a)
+instance NFDataX a => NFDataX (SG.Sum a)
+
 instance NFDataX1 Ratio where
   liftRnfX r x = r (numerator x) `seqX` r (denominator x)
 
@@ -801,6 +815,19 @@ instance Undefined Word64 where deepErrorX = errorX
 instance NFDataX a => Undefined (Seq a) where deepErrorX = errorX
 instance NFDataX a => Undefined (Ratio a) where deepErrorX = errorX
 instance NFDataX a => Undefined (Complex a) where deepErrorX = errorX
+
+instance (Undefined a, Undefined b) => Undefined (SG.Arg a b)
+instance Undefined (SG.All)
+instance Undefined (SG.Any)
+instance Undefined a => Undefined (SG.Dual a)
+instance Undefined a => Undefined (SG.Endo a)
+instance Undefined a => Undefined (SG.First a)
+instance Undefined a => Undefined (SG.Last a)
+instance Undefined a => Undefined (SG.Max a)
+instance Undefined a => Undefined (SG.Min a)
+instance Undefined a => Undefined (SG.Option a)
+instance Undefined a => Undefined (SG.Product a)
+instance Undefined a => Undefined (SG.Sum a)
 
 class GUndefined f where
   gDeepErrorX :: HasCallStack => String -> f a
