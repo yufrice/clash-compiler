@@ -202,8 +202,7 @@ data Vec :: Nat -> Type -> Type where
   Cons :: a -> Vec n a -> Vec (n + 1) a
 
 instance NFDataX a => NFDataX (Vec n a) where
-  rnfX Nil         = ()
-  rnfX (Cons x xs) = rnfX x `seqX` rnfX xs
+  rnfX v = seqX (foldl (\() -> rnfX) () v) ()
 
 instance NFData a => NFData (Vec n a) where
   rnf Nil         = ()
