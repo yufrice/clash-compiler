@@ -205,8 +205,7 @@ instance NFDataX a => NFDataX (Vec n a) where
   rnfX v = seqX (foldl (\() -> rnfX) () v) ()
 
 instance NFData a => NFData (Vec n a) where
-  rnf Nil         = ()
-  rnf (Cons x xs) = rnf x `seq` rnf xs
+  rnf v = seq (foldl (\() -> rnf) () v) ()
 
 -- | Add an element to the head of a vector.
 --
