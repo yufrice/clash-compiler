@@ -56,6 +56,7 @@ import Clash.Signal.Delayed.Internal
 import Clash.Explicit.Signal
   (Clock, Reset, Signal, register,  bundle, unbundle)
 import Clash.XException           (Undefined)
+import GHC.Stack                  (HasCallStack)
 
 {- $setup
 >>> :set -XDataKinds
@@ -91,7 +92,7 @@ let mac :: Clock System gated
 -- [0,0,0,0,1,2,3]
 delayed
   :: forall domain gated synchronous a n d
-   . (KnownNat d, Undefined a)
+   . (HasCallStack, KnownNat d, Undefined a)
   => Clock domain gated
   -> Reset domain synchronous
   -> Vec d a
@@ -118,7 +119,7 @@ delayed clk rst m ds = coerce (delaySignal (coerce ds))
 -- >>> sampleN 7 (delay2 systemClockGen asyncResetGen (dfromList ([0..])))
 -- [0,0,0,1,2,3,4]
 delayedI
-  :: (Default a, KnownNat d, Undefined a)
+  :: (HasCallStack, Default a, KnownNat d, Undefined a)
   => Clock domain gated
   -> Reset domain synchronous
   -> DSignal domain n a

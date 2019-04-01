@@ -51,16 +51,17 @@ import           Data.Proxy                    (Proxy(..))
 import           GHC.TypeLits                  (KnownNat, type (^), type (+), type (*), Nat)
 import           Data.Singletons.Prelude       (Apply, TyFun, type (@@))
 
-import Clash.Signal.Delayed.Internal
+import           Clash.Signal.Delayed.Internal
   (DSignal(..), dfromList, dfromList_lazy, fromSignal, toSignal,
    unsafeFromSignal, antiDelay, feedback)
 import qualified Clash.Explicit.Signal.Delayed as E
-import            Clash.Sized.Vector           (Vec, dtfold)
-import            Clash.Signal
+import           Clash.Sized.Vector            (Vec, dtfold)
+import           Clash.Signal
   (HiddenClockReset, hideClockReset, Signal, delay, Domain(..))
-import            Clash.XException
+import           Clash.XException
+import           Clash.Promoted.Nat            (SNat (..), snatToInteger)
 
-import Clash.Promoted.Nat         (SNat (..), snatToInteger)
+import           GHC.Stack                     (HasCallStack)
 
 {- $setup
 >>> :set -XDataKinds -XTypeOperators -XTypeApplications -XFlexibleContexts
@@ -83,7 +84,7 @@ import Clash.Promoted.Nat         (SNat (..), snatToInteger)
 -- >>> sampleN 7 (toSignal (delay3 (dfromList [0..])))
 -- [0,0,0,0,1,2,3]
 delayed
-  :: (KnownNat d, Undefined a, HiddenClockReset domain gated synchronous)
+  :: (HasCallStack, KnownNat d, Undefined a, HiddenClockReset domain gated synchronous)
   => Vec d a
   -> DSignal domain n a
   -> DSignal domain (n + d) a
@@ -100,7 +101,7 @@ delayed = hideClockReset E.delayed
 -- >>> sampleN 7 (toSignal (delay2 (dfromList [0..])))
 -- [0,0,0,1,2,3,4]
 delayedI
-  :: (Default a, KnownNat d, Undefined a, HiddenClockReset domain gated synchronous)
+  :: (HasCallStack, Default a, KnownNat d, Undefined a, HiddenClockReset domain gated synchronous)
   => DSignal domain n a
   -> DSignal domain (n + d) a
 delayedI = hideClockReset E.delayedI
@@ -116,7 +117,7 @@ delayedI = hideClockReset E.delayedI
 -- >>> printX $ sampleN 6 (toSignal (delayN2 (dfromList [1..])))
 -- [X,X,1,2,3,4]
 delayN :: forall domain gated synchronous a d n .
-          (HiddenClockReset domain gated synchronous, Undefined a)
+          (HasCallStack, HiddenClockReset domain gated synchronous, Undefined a)
        => SNat d
        -> DSignal domain n a
        -> DSignal domain (n+d) a
@@ -137,7 +138,7 @@ delayN d = coerce . go (snatToInteger d) . coerce @_ @(Signal domain a)
 -- >>> printX $ sampleN 6 (toSignal (delayI2 (dfromList [1..])))
 -- [X,X,1,2,3,4]
 delayI :: forall domain gated synchronous d n a.
-          (HiddenClockReset domain gated synchronous, KnownNat d, Undefined a)
+          (HasCallStack, HiddenClockReset domain gated synchronous, KnownNat d, Undefined a)
           => DSignal domain n a
           -> DSignal domain (n+d) a
 delayI = delayN (SNat :: SNat d)
@@ -160,7 +161,8 @@ type instance Apply (DelayedFold domain n delay a) k = DSignal domain (n + (dela
 -- >>> printX $ sampleN 8 (toSignal (delayedFold d2 (*) countingSignals))
 -- [X,X,X,X,0,1,16,81]
 delayedFold :: forall domain gated synchronous n delay k a.
-                ( HiddenClockReset domain gated synchronous
+                ( HasCallStack
+                , HiddenClockReset domain gated synchronous
                 , KnownNat delay
                 , KnownNat k
                 , Undefined a)
