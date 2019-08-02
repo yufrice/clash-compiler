@@ -413,9 +413,9 @@ findPrimitiveAnnotations hdl tmpDir bndrs = do
           ) bndrs
 
   anns <- mapM (GHC.findGlobalAnns deserializer) targets
-  sequence $
+  traceShowId <$> (sequence $
     mapMaybe (primitiveFilePath hdl tmpDir)
-    (concat $ zipWith (\t -> map ((,) t)) targets anns)
+    (concat $ zipWith (\t -> map ((,) t)) targets anns))
 
 parseModule :: GHC.GhcMonad m => GHC.ModSummary -> m GHC.ParsedModule
 parseModule modSum = do
