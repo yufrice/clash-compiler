@@ -267,7 +267,7 @@ loadModules tmpDir useColor hdl modName dflagsM idirs = do
     MonadUtils.liftIO $ putStrLn $ "GHC: Loading external modules from interface files took: " ++ extModDiff
 
     -- Find local primitive annotations
-    pFP' <- findPrimitiveAnnotations hdl tmpDir binderIds
+    pFP' <- findPrimitiveAnnotations hdl tmpDir allBinderIds
 
     hscEnv <- GHC.getSession
 #if MIN_VERSION_ghc(8,6,0)
