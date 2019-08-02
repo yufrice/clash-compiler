@@ -233,8 +233,11 @@ loadModules tmpDir useColor hdl modName dflagsM = do
     (externalBndrs,clsOps,unlocatable,pFP,reprs) <-
       loadExternalExprs tmpDir hdl (UniqSet.mkUniqSet binderIds) bindersC
 
-    -- Find local primitive annotations
-    pFP' <- findPrimitiveAnnotations hdl tmpDir binderIds
+    let externalBndrIds = map fst externalBndrs
+    let allBinderIds = externalBndrIds ++ binderIds
+
+    -- Find primitive annotations
+    pFP' <- findPrimitiveAnnotations hdl tmpDir allBinderIds
 
     hscEnv <- GHC.getSession
 #if MIN_VERSION_ghc(8,6,0)
