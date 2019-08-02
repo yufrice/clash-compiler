@@ -83,6 +83,8 @@ import           Clash.Util                                   (curLoc)
 import           Clash.Annotations.BitRepresentation.Internal
   (DataRepr', dataReprAnnToDataRepr')
 
+import Debug.Trace
+
 ghcLibDir :: IO FilePath
 ghcLibDir = do
   (libDirM,exitCode) <- getProcessOutput $ "ghc-" ++ TOOL_VERSION_ghc ++ " --print-libdir"
@@ -237,7 +239,7 @@ loadModules tmpDir useColor hdl modName dflagsM = do
     let allBinderIds = externalBndrIds ++ binderIds
 
     -- Find primitive annotations
-    pFP' <- findPrimitiveAnnotations hdl tmpDir allBinderIds
+    pFP' <- findPrimitiveAnnotations hdl tmpDir (map (\b -> trace (Outputable.showSDocUnsafe (ppr b)) b) allBinderIds)
 
     hscEnv <- GHC.getSession
 #if MIN_VERSION_ghc(8,6,0)
