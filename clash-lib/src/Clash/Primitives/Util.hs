@@ -32,6 +32,7 @@ import           Clash.Primitives.Types
 import           Clash.Netlist.Types    (BlackBox(..))
 
 import Debug.Trace
+import System.IO
 
 hashCompiledPrimitive :: CompiledPrimitive -> Int
 hashCompiledPrimitive (Primitive {name, primType}) = hash (name, primType)
@@ -97,11 +98,13 @@ generatePrimMap
   -- ^ Directories to search for primitive definitions
   -> IO ResolvedPrimMap
 generatePrimMap filePaths = do
+  hPutStrLn stderr $ "-----------------------------------------------"
+  hPutStrLn stderr $ "filePaths: " ++ (show filePaths)
   primitiveFiles <- fmap concat $ mapM
      (\filePath -> do
-         putStrLn $ "filePath: " ++ filePath
+         hPutStrLn stderr $ "filePath: " ++ filePath
          fpExists <- Directory.doesDirectoryExist filePath
-         putStrLn $ "fpExists: " ++ (show fpExists)
+         hPutStrLn stderr $ "fpExists: " ++ (show fpExists)
          if fpExists
            then
              fmap ( map (FilePath.combine filePath)
@@ -112,6 +115,6 @@ generatePrimMap filePaths = do
              return []
      ) filePaths
 
-  putStrLn $ "primitiveFiles: " ++ (show primitiveFiles)
+  hPutStrLn stderr $ "primitiveFiles: " ++ (show primitiveFiles)
   primitives <- fmap concat $ mapM resolvePrimitive primitiveFiles
   return $ traceShowId $ HashMap.fromList $ zip (map name primitives) primitives
