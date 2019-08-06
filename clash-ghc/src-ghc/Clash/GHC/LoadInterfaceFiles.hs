@@ -56,6 +56,8 @@ import qualified UniqFM
 import qualified UniqSet
 import qualified Var
 
+import Debug.Trace
+
 -- Internal Modules
 import           Clash.Annotations.BitRepresentation.Internal
   (DataRepr', dataReprAnnToDataRepr')
@@ -248,9 +250,9 @@ primitiveFilePath hdl tmpDir targetPrim =
                 Annotations.ModuleTarget mod' -> Module.moduleStableString mod'
             inlinePrimsDir =
               tmpDir </> "inline_primitives" </> map toLower (show hdl)
-            primFile = inlinePrimsDir </> qualifiedName <.> "json"
+            primFile = traceShowId $ inlinePrimsDir </> qualifiedName <.> "json"
         createDirectoryIfMissing True inlinePrimsDir
-        writeFile primFile content
+        writeFile primFile (traceShowId content)
         return inlinePrimsDir
     _ -> Nothing
 
