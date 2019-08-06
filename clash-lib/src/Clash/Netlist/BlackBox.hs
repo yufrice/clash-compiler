@@ -54,7 +54,7 @@ import           Clash.Core.Pretty             (showPpr)
 import           Clash.Core.Subst              (extendIdSubst, mkSubst, substTm)
 import           Clash.Core.Term               as C (Term (..))
 import           Clash.Core.Type               as C (Type (..), ConstTy (..),
-                                                splitFunTys)
+                                                splitFunTys, splitFunTy)
 import           Clash.Core.TyCon              as C (tyConDataCons)
 import           Clash.Core.Util               (collectArgs, isFun, termType)
 import           Clash.Core.Var                as V (Id, Var (..), mkId, modifyVarName)
@@ -380,6 +380,7 @@ mkFunInput
        ,BlackBoxContext)
       ,[Declaration])
 mkFunInput resId e = do
+  tcm <- Lens.use tcCache
   -- TODO: Rewrite this function to use blackbox functions. Right now it
   -- TODO: generates strings that are later parsed/interpreted again. Silly!
   let (appE,args) = collectArgs e
@@ -388,12 +389,35 @@ mkFunInput resId e = do
             Prim nm _ -> do
               bbM <- fmap (HashMap.lookup nm) $ Lens.use primitives
               (_,sp) <- Lens.use curCompNm
-              let templ = case bbM of
-                            Just (P.BlackBox {..}) -> Left (kind,outputReg,libraries,imports,includes,nm,template)
-                            _ -> throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm) Nothing)
-              return templ
+              case bbM of
+                Nothing ->
+                  throw (ClashException sp ($(curLoc) ++ "No blackbox found for: " ++ unpack nm) Nothing)
+                Just (P.BlackBox {..}) ->
+                  pure (Left (kind,outputReg,libraries,imports,includes,nm,template))
+                Just (P.Primitive pn pt) ->
+                  error $ $(curLoc) ++ "Unexpected blackbox type: "
+                                    ++ "Primitive " ++ show pn
+                                    ++ " " ++ show pt
+                Just (P.BlackBoxHaskell pName fName (_, func)) -> do
+                  -- Determine result type of this blackbox. If it's not a
+                  -- function, simply use its term type.
+                  let
+                    resTy0 = termType tcm e
+                    resTy1 =
+                      case splitFunTy tcm resTy0 of
+                        Just (_, t) -> t
+                        Nothing -> resTy0
+
+                  let bbhRes = func True (Right resId) pName args resTy1
+                  case bbhRes of
+                    Left err ->
+                      error $ $(curLoc) ++ show fName ++ " yielded an error: "
+                                        ++ err
+                    Right (BlackBoxMeta{..}, template) ->
+                      pure $
+                        Left ( bbKind, bbOutputReg, bbLibrary, bbImports
+                             , bbIncludes, pName, template)
             Data dc -> do
-              tcm <- Lens.use tcCache
               let eTy = termType tcm e
                   (_,resTy) = splitFunTys tcm eTy
 
