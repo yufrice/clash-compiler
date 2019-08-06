@@ -31,6 +31,8 @@ import           System.IO.Error        (tryIOError)
 import           Clash.Primitives.Types
 import           Clash.Netlist.Types    (BlackBox(..))
 
+import Debug.Trace
+
 hashCompiledPrimitive :: CompiledPrimitive -> Int
 hashCompiledPrimitive (Primitive {name, primType}) = hash (name, primType)
 hashCompiledPrimitive (BlackBoxHaskell {function}) = fst function
@@ -97,15 +99,19 @@ generatePrimMap
 generatePrimMap filePaths = do
   primitiveFiles <- fmap concat $ mapM
      (\filePath -> do
+         putStrLn $ "filePath: " ++ filePath
          fpExists <- Directory.doesDirectoryExist filePath
+         putStrLn $ "fpExists: " ++ (show fpExists)
          if fpExists
            then
              fmap ( map (FilePath.combine filePath)
                   . filter (isSuffixOf ".json")
+                  . traceShowId
                   ) (Directory.getDirectoryContents filePath)
            else
              return []
      ) filePaths
 
+  putStrLn $ "primitiveFiles: " ++ (show primitiveFiles)
   primitives <- fmap concat $ mapM resolvePrimitive primitiveFiles
-  return $ HashMap.fromList $ zip (map name primitives) primitives
+  return $ traceShowId $ HashMap.fromList $ zip (map name primitives) primitives
