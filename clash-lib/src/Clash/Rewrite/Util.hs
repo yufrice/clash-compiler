@@ -67,10 +67,10 @@ import           Clash.Core.Term
    TmName, WorkInfo (..), TickInfo, collectArgs, collectArgsTicks)
 import           Clash.Core.TyCon
   (TyConMap, tyConDataCons)
-import           Clash.Core.Type             (KindOrType, Type (..),
-                                              TypeView (..), coreView1,
-                                              normalizeType,
-                                              typeKind, tyView, isPolyFunTy)
+import           Clash.Core.TysPrim          (naturalPrimTy, wordPrimTy)
+import           Clash.Core.Type
+  (KindOrType, Type (..), TypeView (..), ConstTy (..), coreView1, normalizeType,
+  typeKind, tyView, isPolyFunTy)
 import           Clash.Core.Util
   (isPolyFun, mkAbstraction, mkApps, mkLams, mkTicks,
    mkTmApps, mkTyApps, mkTyLams, termType, dataConInstArgTysE, isClockOrReset)
@@ -85,6 +85,8 @@ import           Clash.Netlist.Util          (representableType)
 import           Clash.Rewrite.Types
 import           Clash.Unique
 import           Clash.Util
+
+import Debug.Trace
 
 -- | Lift an action working in the '_extra' state to the 'RewriteMonad'
 zoomExtra :: State.State extra a
@@ -675,6 +677,25 @@ mkSelectorCase
 mkSelectorCase caller inScope tcm scrut dcI fieldI = go (termType tcm scrut)
   where
     go (coreView1 tcm -> Just ty') = go ty'
+
+    go (tyView -> TyConApp (nameOcc -> "GHC.Natural.Natural") _args)
+      | dcI == 1 && fieldI == 0 = pure $
+        Prim
+          "Clash.Magic.naturalToWord#"
+          (PrimInfo
+            (ConstTy Arrow `AppTy` naturalPrimTy `AppTy` wordPrimTy)
+            WorkNever)
+        `App`
+        scrut
+
+    go (tyView -> TyConApp (nameOcc -> "GHC.Natural.Natural") _args) =
+      pure $
+      Prim
+        "Clash.Magic.removedNaturalBranch"
+        (PrimInfo
+          (ConstTy Arrow `AppTy` naturalPrimTy `AppTy` wordPrimTy)
+          WorkNever)
+
     go scrutTy@(tyView -> TyConApp tc args) =
       case tyConDataCons (lookupUniqMap' tcm tc) of
         [] -> cantCreate $(curLoc) ("TyCon has no DataCons: " ++ show tc ++ " " ++ showPpr tc) scrutTy

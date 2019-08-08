@@ -1226,6 +1226,8 @@ reduceConstant isSubj tcm h k nm pInfo tys args = case nm of
     -> reduce (boolToBoolLiteral tcm ty (s1 == s2))
     | otherwise -> error (show args)
 
+  "Clash.Magic.naturalToWord#" -- :: Natural -> Word#
+    -> error $ show args
 
   "Clash.Class.BitPack.packDouble#" -- :: Double -> BitVector 64
     | [DC _ [Left arg]] <- args

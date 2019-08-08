@@ -13,4 +13,10 @@
     , "primType"  : "Function"
     }
   }
+,
+  { "Primitive":
+    { "name": "Clash.Magic.naturalToWord#"
+    , "primType": "Function"
+    }
+  }
 ]
