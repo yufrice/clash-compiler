@@ -26,6 +26,8 @@ where
 #endif
 #endif
 
+import Debug.Trace
+
 -- External Modules
 import           Clash.Annotations.Primitive     (HDL, PrimitiveGuard)
 import           Clash.Annotations.TopEntity     (TopEntity (..))
@@ -36,6 +38,8 @@ import           Control.Exception               (throw)
 #if MIN_VERSION_ghc(8,6,0)
 import           Control.Exception               (throwIO)
 #endif
+import           Control.Monad                   (forM)
+import           Control.Monad.Catch             (catch)
 import           Control.Monad.IO.Class          (liftIO)
 import           Data.Char                       (isDigit)
 import           Data.Generics.Uniplate.DataOnly (transform)
@@ -46,6 +50,8 @@ import           Data.Maybe                      (catMaybes, listToMaybe, mapMay
 import qualified Data.Text                       as Text
 import qualified Data.Time.Clock                 as Clock
 import           Language.Haskell.TH.Syntax      (lift)
+
+import Clash.GHC.LoadInterfaceFiles
 
 #ifdef USE_GHC_PATHS
 import           GHC.Paths                       (libdir)
@@ -67,6 +73,7 @@ import qualified DynamicLoading
 #endif
 import           DynFlags                        (GeneralFlag (..))
 import qualified DynFlags
+import qualified Finder
 import qualified GHC
 import qualified HscMain
 import qualified HscTypes
@@ -125,6 +132,88 @@ getProcessOutput command =
      return (output, exitCode)
 #endif
 
+loadRootFromHome
+  :: GHC.GhcMonad m
+  => HscTypes.Target
+  -> m ( [CoreSyn.CoreBndr]
+       , GHC.ModuleName
+       , [CoreSyn.CoreBind]
+       , [CoreSyn.CoreBndr]
+       , FamInstEnv.FamInstEnv
+       )
+
+loadRootFromHome target = do
+  GHC.setTargets [target]
+  liftIO $ putStrLn "C"
+  modGraph <- GHC.depanal [] False
+  liftIO $ putStrLn "D"
+#if MIN_VERSION_ghc(8,4,1)
+  let modGraph' = GHC.mapMG disableOptimizationsFlags modGraph
+#else
+  let modGraph' = map disableOptimizationsFlags modGraph
+#endif
+      -- 'topSortModuleGraph' ensures that modGraph2, and hence tidiedMods
+      -- are in topological order, i.e. the root module is last.
+      modGraph2 = Digraph.flattenSCCs (GHC.topSortModuleGraph True modGraph' Nothing)
+
+  tidiedMods <- mapM (\m -> do { pMod  <- parseModule m
+                               ; tcMod <- GHC.typecheckModule (removeStrictnessAnnotations pMod)
+                               -- The purpose of the home package table (HPT) is to track
+                               -- the already compiled modules, so subsequent modules can
+                               -- rely/use those compilation results
+                               --
+                               -- We need to update the home package table (HPT) ourselves
+                               -- as we can no longer depend on 'GHC.load' to create a
+                               -- proper HPT.
+                               --
+                               -- The reason we have to cannot rely on 'GHC.load' is that
+                               -- it runs the rename/type-checker, which we also run in
+                               -- the code above. This would mean that the renamer/type-checker
+                               -- is run twice, which in turn means that template haskell
+                               -- splices are run twice.
+                               --
+                               -- Given that TH splices can do non-trivial computation and I/O,
+                               -- running TH twice must be avoid.
+                               ; tcMod' <- GHC.loadModule tcMod
+                               ; dsMod <- fmap GHC.coreModule $ GHC.desugarModule tcMod'
+                               ; hsc_env <- GHC.getSession
+#if MIN_VERSION_ghc(8,4,1)
+                               ; simpl_guts <- MonadUtils.liftIO $ HscMain.hscSimplify hsc_env [] dsMod
+#else
+                               ; simpl_guts <- MonadUtils.liftIO $ HscMain.hscSimplify hsc_env dsMod
+#endif
+                               ; checkForInvalidPrelude simpl_guts
+                               ; (tidy_guts,_) <- MonadUtils.liftIO $ TidyPgm.tidyProgram hsc_env simpl_guts
+                               ; let pgm        = HscTypes.cg_binds tidy_guts
+                               ; let modFamInstEnv = TcRnTypes.tcg_fam_inst_env $ fst $ GHC.tm_internals_ tcMod
+                               ; return (pgm,modFamInstEnv)
+                               }
+                       ) modGraph2
+
+  let (binders,modFamInstEnvs) = unzip tidiedMods
+      bindersC                 = concat binders
+      binderIds                = map fst (CoreSyn.flattenBinds bindersC)
+      plusFamInst f1 f2        = FamInstEnv.extendFamInstEnvList f1 (FamInstEnv.famInstEnvElts f2)
+      modFamInstEnvs'          = foldl' plusFamInst FamInstEnv.emptyFamInstEnv modFamInstEnvs
+      rootModule               = GHC.ms_mod_name . last $ modGraph2
+      rootIds                  = map fst . CoreSyn.flattenBinds $ last binders
+
+  return (rootIds, rootModule, bindersC, binderIds, modFamInstEnvs')
+
+--lookupModuleM :: GHC.GhcMonad m => GHC.ModuleName -> m (Maybe GHC.Module)
+--lookupModuleM mod_name = do
+--  lookupModuleM mod_name `catch` (\_ -> pure Nothing)
+----  hsc_env <- GHC.getSession
+----  home <- lookupLoadedHomeModule mod_name
+----  case home of
+----    Just m  -> return m
+----    Nothing -> liftIO $ do
+----      res <- findExposedPackageModule hsc_env mod_name Nothing
+----      case res of
+----        HscTypes.Found _ m -> pure (Just m)
+----        err       -> Nothing
+
+
 loadModules
   :: FilePath
   -- ^ Temporary directory
@@ -150,6 +239,7 @@ loadModules
         , [(Text.Text, PrimitiveGuard ())]
         )
 loadModules tmpDir useColor hdl modName dflagsM idirs = do
+  MonadUtils.liftIO $ putStrLn $ "GHC: loadMoules.."
   libDir <- MonadUtils.liftIO ghcLibDir
   startTime <- Clock.getCurrentTime
   GHC.runGhc (Just libDir) $ do
@@ -201,56 +291,39 @@ loadModules tmpDir useColor hdl modName dflagsM idirs = do
 #else
     _ <- GHC.setSessionDynFlags dflags3
 #endif
-    target <- GHC.guessTarget modName Nothing
-    GHC.setTargets [target]
-    modGraph <- GHC.depanal [] False
-#if MIN_VERSION_ghc(8,4,1)
-    let modGraph' = GHC.mapMG disableOptimizationsFlags modGraph
-#else
-    let modGraph' = map disableOptimizationsFlags modGraph
-#endif
-        -- 'topSortModuleGraph' ensures that modGraph2, and hence tidiedMods
-        -- are in topological order, i.e. the root module is last.
-        modGraph2 = Digraph.flattenSCCs (GHC.topSortModuleGraph True modGraph' Nothing)
-    tidiedMods <- mapM (\m -> do { pMod  <- parseModule m
-                                 ; tcMod <- GHC.typecheckModule (removeStrictnessAnnotations pMod)
-                                 -- The purpose of the home package table (HPT) is to track
-                                 -- the already compiled modules, so subsequent modules can
-                                 -- rely/use those compilation results
-                                 --
-                                 -- We need to update the home package table (HPT) ourselves
-                                 -- as we can no longer depend on 'GHC.load' to create a
-                                 -- proper HPT.
-                                 --
-                                 -- The reason we have to cannot rely on 'GHC.load' is that
-                                 -- it runs the rename/type-checker, which we also run in
-                                 -- the code above. This would mean that the renamer/type-checker
-                                 -- is run twice, which in turn means that template haskell
-                                 -- splices are run twice.
-                                 --
-                                 -- Given that TH splices can do non-trivial computation and I/O,
-                                 -- running TH twice must be avoid.
-                                 ; tcMod' <- GHC.loadModule tcMod
-                                 ; dsMod <- fmap GHC.coreModule $ GHC.desugarModule tcMod'
-                                 ; hsc_env <- GHC.getSession
-#if MIN_VERSION_ghc(8,4,1)
-                                 ; simpl_guts <- MonadUtils.liftIO $ HscMain.hscSimplify hsc_env [] dsMod
-#else
-                                 ; simpl_guts <- MonadUtils.liftIO $ HscMain.hscSimplify hsc_env dsMod
-#endif
-                                 ; checkForInvalidPrelude simpl_guts
-                                 ; (tidy_guts,_) <- MonadUtils.liftIO $ TidyPgm.tidyProgram hsc_env simpl_guts
-                                 ; let pgm        = HscTypes.cg_binds tidy_guts
-                                 ; let modFamInstEnv = TcRnTypes.tcg_fam_inst_env $ fst $ GHC.tm_internals_ tcMod
-                                 ; return (pgm,modFamInstEnv)
-                                 }
-                         ) modGraph2
 
-    let (binders,modFamInstEnvs) = unzip tidiedMods
-        bindersC                 = concat binders
-        binderIds                = map fst (CoreSyn.flattenBinds bindersC)
-        plusFamInst f1 f2        = FamInstEnv.extendFamInstEnvList f1 (FamInstEnv.famInstEnvElts f2)
-        modFamInstEnvs'          = foldl' plusFamInst FamInstEnv.emptyFamInstEnv modFamInstEnvs
+
+    liftIO $ putStrLn "A"
+    target <- GHC.guessTarget modName Nothing
+
+    (rootIds, rootModule, bindersC :: _, binderIds :: _, modFamInstEnvs) <-
+      case target of
+        GHC.Target (GHC.TargetModule targetModName) _ _ -> do
+          -- Module might already be compiled & ready in package db. Let's try.
+          mod <- GHC.lookupModule targetModName Nothing
+--          found <- trace (Outputable.showSDocUnsafe (ppr mod)) liftIO $ Finder.findExposedPackageModule hscenv targetModName Nothing
+          bndrs <-
+            runIfl mod $ do
+              ifaceM <- loadIface mod
+              case ifaceM of
+                Nothing -> error "??"
+                Just iface -> do
+                  let decls = map snd (GHC.mi_decls iface)
+                  bndrsM <-
+                    forM decls $ \decl -> do
+                      tyThing <- loadDecl decl
+                      case tyThing of
+                        GHC.AnId bndr -> pure (Just bndr)
+                        _ -> pure Nothing
+                  pure (catMaybes bndrsM)
+
+          error $ Outputable.showSDocUnsafe (ppr bndrs)
+
+        _ ->
+          -- Target does not refer to a module
+          trace "FALL2" $ loadRootFromHome target
+
+    liftIO $ putStrLn "B"
 
     modTime <- startTime `deepseq` length binderIds `deepseq` MonadUtils.liftIO Clock.getCurrentTime
     let modStartDiff = reportTimeDiff modTime startTime
@@ -279,11 +352,6 @@ loadModules tmpDir useColor hdl modName dflagsM idirs = do
 #else
     famInstEnvs <- TcRnMonad.liftIO $ TcRnMonad.initTcForLookup hscEnv FamInst.tcGetFamInstEnvs
 #endif
-
-    -- Because tidiedMods is in topological order, binders is also, and hence
-    -- the binders belonging to the "root" module are the last binders
-    let rootModule = GHC.ms_mod_name . last $ modGraph2
-        rootIds    = map fst . CoreSyn.flattenBinds $ last binders
 
     -- Because tidiedMods is in topological order, binders is also, and hence
     -- allSyn is in topological order. This means that the "root" 'topEntity'
@@ -330,7 +398,7 @@ loadModules tmpDir useColor hdl modName dflagsM idirs = do
     return ( bindersC ++ makeRecursiveGroups externalBndrs
            , clsOps
            , unlocatable
-           , (fst famInstEnvs, modFamInstEnvs')
+           , (fst famInstEnvs, modFamInstEnvs)
            , topEntities'
            , pFP1
            , reprs1

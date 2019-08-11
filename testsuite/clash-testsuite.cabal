@@ -28,6 +28,17 @@ flag cosim
    default: False
    manual: True
 
+Library
+  default-language:   Haskell2010
+  hs-source-dirs:      ../examples
+  ghc-options:        -Wall -fexpose-all-unfoldings -fno-worker-wrapper
+  CPP-Options:        -DCABAL
+
+  Exposed-modules:    Examples.ALU
+
+  build-depends:      base               >=4.8      && <5,
+                      clash-prelude
+
 executable clash-testsuite
   main-is:             Main.hs
   ghc-options:         -Wall -threaded -with-rtsopts=-N
@@ -37,6 +48,7 @@ executable clash-testsuite
                        OverloadedStrings
                        ViewPatterns
   build-depends:       base               >=4.8      && <5,
+                       data-default       >=0.7      && <0.8,
                        deepseq            >=1.4      && <1.5,
                        directory          >=1.2      && <1.4,
                        filepath           >=1.4      && <1.5,
@@ -46,6 +58,7 @@ executable clash-testsuite
                        tasty-hunit,
                        neat-interpolation >=0.3      && <0.4,
                        concurrent-extra   >=0.7      && <0.8,
+                       template-haskell   >= 2.12.0  && < 2.15,
                        temporary,
                        text,
                        generic-lens,
@@ -57,7 +70,8 @@ executable clash-testsuite
                        -- it anyway so we're better of doing it beforehand.
                        clash-ghc,
                        clash-lib,
-                       clash-prelude
+                       clash-prelude,
+                       clash-testsuite
 
   -- hs-source-dirs:
   default-language:    Haskell2010

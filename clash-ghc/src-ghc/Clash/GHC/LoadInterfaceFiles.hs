@@ -15,6 +15,10 @@
 module Clash.GHC.LoadInterfaceFiles
   ( loadExternalExprs
   , primitiveFilePath
+
+  , runIfl
+  , loadIface
+  , loadDecl
   )
 where
 

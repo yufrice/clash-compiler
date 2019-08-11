@@ -1,4 +1,4 @@
-module ALU where
+module Examples.ALU where
 
 import Clash.Prelude
 

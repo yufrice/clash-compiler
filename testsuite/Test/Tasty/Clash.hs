@@ -1,15 +1,20 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP            #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 module Test.Tasty.Clash where
 
-import           Data.Char                 (toLower)
-import qualified Data.List                 as List
-import           Data.List                 (intercalate)
-import qualified Data.Text                 as T
-import qualified System.Directory          as Directory
-import           System.Environment        (getEnv)
-import           System.FilePath           ((</>),(<.>))
-import           System.IO.Unsafe          (unsafePerformIO)
-import           System.IO.Temp            (createTempDirectory)
+import           Data.Char                  (toLower)
+import           Data.Default               (Default(def))
+import qualified Data.List                  as List
+import           Data.List                  (intercalate)
+import           Data.Maybe                 (fromJust)
+import qualified Data.Text                  as T
+import qualified Language.Haskell.TH.Syntax as TH
+import qualified System.Directory           as Directory
+import           System.Environment         (getEnv)
+import           System.FilePath            ((</>),(<.>))
+import           System.IO.Unsafe           (unsafePerformIO)
+import           System.IO.Temp             (createTempDirectory)
 
 import Test.Tasty
   (TestTree, TestName, DependencyType(AllSucceed), testGroup, withResource, after)
@@ -24,6 +29,40 @@ data BuildTarget
   | Verilog
   deriving (Show, Eq, Ord)
 
+data TestOptions =
+  TestOptions
+    { hdlSim :: Bool
+    -- ^ Run hdl simulators (GHDL, ModelSim, etc.)
+    , hdlTargets :: [BuildTarget]
+    -- ^ Run tests for these targets
+    , hdlDirs :: Maybe [FilePath]
+    -- ^ Directories to import in simulator. If Nothing, simply include all
+    -- directories
+    , clashFlags :: [String]
+    -- ^ Extra flags to pass to Clash
+    }
+
+defBuild :: [BuildTarget]
+#ifdef DISABLE_SV_TESTS
+defBuild = [VHDL, Verilog]
+#else
+defBuild = [VHDL, Verilog, SystemVerilog]
+#endif
+
+instance Default TestOptions where
+  def =
+    TestOptions
+      { hdlSim=True
+      , hdlTargets=defBuild
+      , hdlDirs=Nothing
+      , clashFlags=[]
+      }
+
+replace :: Eq a => a -> a -> [a] -> [a]
+replace a b = map $ \c -> if c == a then b else c
+
+fqName :: TH.Name -> String
+fqName n = fromJust (TH.nameModule n) ++ "." ++ TH.nameBase n
 
 -- | Single directory for this test run. All tests are run relative to this
 -- directory. This does require all test names to be unique, which is checked
@@ -112,7 +151,9 @@ createDirs path subdirs =
 -- | Generate command to run clash to compile a file and place the resulting
 -- hdl files in a specific directory
 clashCmd
-  :: BuildTarget
+  :: TH.Name
+  -- ^ Function to compile
+  -> BuildTarget
   -- ^ Build target
   -> FilePath
   -- ^ Source directory
@@ -124,14 +165,14 @@ clashCmd
   -- ^ Output directory
   -> (String, [String])
   -- ^ (command, arguments)
-clashCmd target sourceDir extraArgs modName oDir =
+clashCmd funcName target sourceDir extraArgs modName oDir =
   (clashBin, args)
     where
+      -- TODO: Add main-is support to Clash
       args = concat [
           [target']
         , extraArgs
-        , [sourceDir </> modName <.> "hs"]
-        , ["-i" ++ sourceDir]
+        , [fromJust (TH.nameModule funcName)]
         , ["-fclash-hdldir", oDir]
         , ["-odir", oDir]
         , ["-hidir", oDir]
@@ -145,7 +186,9 @@ clashCmd target sourceDir extraArgs modName oDir =
           SystemVerilog -> "--systemverilog"
 
 clashHDL
-  :: BuildTarget
+  :: TH.Name
+  -- ^ Function to compile
+  -> BuildTarget
   -- ^ Build target
   -> FilePath
   -- ^ Source directory
@@ -156,9 +199,8 @@ clashHDL
   -> FilePath
   -- ^ Output directory
   -> (TestName, TestTree)
-clashHDL t sourceDir extraArgs modName oDir =
-  let (cmd, args) = clashCmd t sourceDir extraArgs modName oDir in
---   let testName = List.intercalate " " $ "clash" : extraArgs in
+clashHDL funcName t sourceDir extraArgs modName oDir =
+  let (cmd, args) = clashCmd funcName t sourceDir extraArgs modName oDir in
   let testName = "clash" in
   (testName, testProgram testName cmd args NoGlob PrintStdErr False Nothing)
 
@@ -376,29 +418,26 @@ vsim path modName entName =
 
 
 runTest'
-  :: FilePath
-  -- ^ Directory test files are located
-  -> BuildTarget
-  -- ^ Targets which should be tested
-  -> [String]
-  -- ^ Commandline options passed to Clash
-  -> String
-  -- ^ Name of test
-  -> [String]
-  -- ^ Directories to import in simulator
-  -> String
-  -- ^ Function to test/run
-  -> Bool
-  -- ^ Run HDL simulations. If False, functions will only be compiled with
-  -- the simulators, but never executed.
+  :: TH.Name
+  -- ^ Function to test
+  -> TestOptions
+  -- ^ Options to run with
   -> [TestName]
   -- ^ Parent test names in order of distance to the test. That is, the last
   -- item in the list will be the root node, while the first one will be the
   -- one closest to the test.
+  -> BuildTarget
+  -- ^ Targets which should be tested
   -> TestTree
-runTest' env VHDL extraArgs modName subdirs entName doSim path =
+runTest' funcName TestOptions{hdlSim,hdlDirs,clashFlags} path VHDL =
   withResource acquire tastyRelease (const seqTests)
     where
+      -- TODO: Fix
+      modName = fromJust (TH.nameModule funcName)
+      subdirs = fromJust hdlDirs
+
+      env     = replace '/' '.' modName
+      entName = TH.nameBase funcName
       vhdlDir = "vhdl"
       modDir  = vhdlDir </> modName
       workDir = modDir </> "work"
@@ -413,64 +452,67 @@ runTest' env VHDL extraArgs modName subdirs entName doSim path =
       seqTests = testGroup "VHDL" (sequenceTests path' tests)
 
       tests = concat $ [
-          [ clashHDL VHDL (sourceDirectory </> env) extraArgs modName (testDirectory path') ]
+          [ clashHDL funcName VHDL (sourceDirectory </> env) clashFlags modName (testDirectory path') ]
         , map (ghdlLibrary path' modName) libs
         , [ghdlImport path' modName (subdirs List.\\ libs)]
         , [ghdlMake path' modName subdirs libs entName]
-        ] ++ [if doSim then [ghdlSim path' modName (noConflict entName subdirs)] else []]
+        ] ++ [if hdlSim then [ghdlSim path' modName (noConflict entName subdirs)] else []]
 
-runTest' env Verilog extraArgs modName subdirs entName doSim path =
+runTest' funcName TestOptions{hdlSim,hdlDirs,clashFlags} path Verilog =
   withResource acquire tastyRelease (const seqTests)
     where
+      -- TODO: Fix
+      modName = fromJust (TH.nameModule funcName)
+      subdirs = fromJust hdlDirs
+
+      env     = replace '/' '.' modName
+      entName = TH.nameBase funcName
       verilogDir = "verilog"
       modDir     = verilogDir </> modName
       acquire    = tastyAcquire path' [verilogDir, modDir]
       path'      = "Verilog":path
 
       seqTests = testGroup "Verilog" $ sequenceTests path' $
-        [ clashHDL Verilog (sourceDirectory </> env) extraArgs modName (testDirectory path')
+        [ clashHDL funcName Verilog (sourceDirectory </> env) clashFlags modName (testDirectory path')
         , iverilog path' modName subdirs entName
-        ] ++ if doSim then [vvp path' modName (noConflict entName subdirs)] else []
+        ] ++ if hdlSim then [vvp path' modName (noConflict entName subdirs)] else []
 --           ++ map (\f -> f (cwDir </> env) Verilog verilogDir modDir modName entName)
 
-runTest' env SystemVerilog extraArgs modName subdirs entName doSim path =
+runTest' funcName TestOptions{hdlSim,hdlDirs,clashFlags} path SystemVerilog =
   withResource acquire tastyRelease (const seqTests)
     where
+      -- TODO: Fix
+      modName = fromJust (TH.nameModule funcName)
+      subdirs = fromJust hdlDirs
+
+      env     = replace '/' '.' modName
+      entName = TH.nameBase funcName
       svDir   = "systemverilog"
       modDir  = svDir </> modName
       acquire = tastyAcquire path' [svDir, modDir]
       path'   = "SystemVerilog":path
 
       seqTests = testGroup "SystemVerilog" $ sequenceTests path' $ concat $
-        [ [ clashHDL SystemVerilog (sourceDirectory </> env) extraArgs modName (testDirectory path') ]
+        [ [ clashHDL funcName SystemVerilog (sourceDirectory </> env) clashFlags modName (testDirectory path') ]
           , vlog path' modName subdirs
-          ] ++ [if doSim then [vsim path' modName entName] else []]
+          ] ++ [if hdlSim then [vsim path' modName entName] else []]
             -- ++ [map (\f -> f (cwDir </> env) SystemVerilog svDir modDir modName entName) ]
 
 runTest
-  :: FilePath
-  -- ^ Directory test files are in
-  -> [BuildTarget]
-  -- ^ Targets which should be tested
-  -> [String]
-  -- ^ Commandline options passed to Clash
-  -> String
-  -- ^ Name of test
-  -> ([String], String, Bool)
-  -- ^ ( Directories to import in simulator
-  --   , Function to test/run/
-  --   , Run HDL simulations. If False, functions will only be compiled with
-  --     the simulators, but never executed. )
+  :: TH.Name
+  -- ^ Function to test
+  -> TestOptions
+  -- ^ Options to run with
   -> [TestName]
   -- ^ Parent test names in order of distance to the test. That is, the last
   -- item in the list will be the root node, while the first one will be the
   -- one closest to the test.
   -> TestTree
-runTest env targets extraArgs modName (subdirs, entName, doSim) path =
-  testGroup modName (map runTest'' targets)
-    where
-      runTest'' target =
-        runTest' env target extraArgs modName subdirs entName doSim (modName:path)
+runTest funcName opts path =
+  let modName = fromJust (TH.nameModule funcName) in
+  testGroup
+    modName
+    (map (runTest' funcName opts (modName:path)) (hdlTargets opts))
 
 runFailingTest'
   :: Bool
@@ -492,7 +534,7 @@ runFailingTest'
   -> TestTree
 runFailingTest' testExitCode env target extraArgs modName expectedStderr path =
   let args0 = "-fclash-no-cache" : extraArgs in
-  let (cmd, args1) = clashCmd target (sourceDirectory </> env) args0 modName (testDirectory path) in
+  let (cmd, args1) = clashCmd undefined target (sourceDirectory </> env) args0 modName (testDirectory path) in
   let testName    = "clash" in
   testFailingProgram
     testExitCode
@@ -636,7 +678,7 @@ outputTest' env target extraClashArgs extraGhcArgs modName funcName path =
       workDir = testDirectory path'
 
       seqTests = testGroup (show target) $ sequenceTests path' $
-        [ clashHDL target (sourceDirectory </> env) extraClashArgs modName workDir
+        [ clashHDL undefined target (sourceDirectory </> env) extraClashArgs modName workDir
         , ("runghc", testProgram "runghc" "cabal" args NoGlob PrintStdErr False Nothing)
         ]
 
