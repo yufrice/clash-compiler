@@ -14,17 +14,17 @@ module Clash.Signal.Internal.Ambiguous
   ) where
 
 import           Clash.Signal.Internal
-import           Clash.Promoted.Nat         (SNat)
+import           Clash.Promoted.Nat         (snatToNum)
 
 -- | Get the clock period from a KnownDomain context
 clockPeriod
-  :: forall dom period
-   . (KnownDomain dom, DomainPeriod dom ~ period)
-  => SNat period
+  :: forall dom a
+   . (Num a, KnownDomain dom{-, DomainPeriod dom ~ period-})
+  => a
 clockPeriod =
   case knownDomain @dom of
     SDomainConfiguration _dom period _edge _sync _init _polarity ->
-      period
+      snatToNum period
 {-# NOINLINE clockPeriod #-}
 -- @NOINLINE: https://github.com/clash-lang/clash-compiler/issues/662
 

@@ -45,7 +45,7 @@ import System.IO.Unsafe      (unsafeDupablePerformIO)
 
 import Clash.Annotations.Primitive (hasBlackBox)
 import Clash.Class.Num       (satSucc, SaturationMode(SatBound))
-import Clash.Promoted.Nat    (SNat(..), snatToNum)
+import Clash.Promoted.Nat    (SNat(..))
 import Clash.Explicit.Signal
   (Clock, Reset, System, Signal, clockPeriod, toEnable, fromList, register,
   unbundle, unsafeSynchronizer, veryUnsafeSynchronizer, clockGen)
@@ -269,8 +269,8 @@ outputVerifier
   -> Signal testDom Bool
   -- ^ True if all samples are verified
 outputVerifier clk rst samples i0 =
-    let t1    = snatToNum (clockPeriod @circuitDom)
-        t2    = snatToNum (clockPeriod @testDom)
+    let t1    = clockPeriod @circuitDom
+        t2    = clockPeriod @testDom
         i1    = veryUnsafeSynchronizer t1 t2 i0
         en    = toEnable (pure True)
         (s,o) = unbundle (genT <$> register clk rst en 0 s)
@@ -333,8 +333,8 @@ outputVerifierBitVector
   -> Signal testDom Bool
   -- ^ Indicator that all samples are verified
 outputVerifierBitVector clk rst samples i0 =
-    let t1    = snatToNum (clockPeriod @circuitDom)
-        t2    = snatToNum (clockPeriod @testDom)
+    let t1    = clockPeriod @circuitDom
+        t2    = clockPeriod @testDom
         i1    = veryUnsafeSynchronizer t1 t2 i0
         en    = toEnable (pure True)
         (s,o) = unbundle (genT <$> register clk rst en 0 s)

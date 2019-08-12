@@ -563,7 +563,7 @@ mkFunApp dstId fun args tickDecls = do
               instLabel3 <- mkUniqueIdentifier Basic instLabel2
               let instDecl = InstDecl Entity Nothing compName instLabel3 [] (outpAssign ++ inpAssigns)
               return (argDecls ++ argDecls' ++ tickDecls ++ [instDecl])
-            else error $ $(curLoc) ++ "under-applied normalized function"
+            else error $ $(curLoc) ++ "under-applied normalized function: " ++ showPpr fun
         Nothing -> case args of
           [] -> return [Assignment dstId (Identifier (nameOcc $ varName fun) Nothing)]
           _ -> error $ $(curLoc) ++ "Unknown function: " ++ showPpr fun

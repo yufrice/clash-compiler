@@ -495,8 +495,8 @@ unsafeSynchronizer
   -> Signal dom2 a
 unsafeSynchronizer _clk1 _clk2 =
   veryUnsafeSynchronizer
-    (snatToNum (clockPeriod @dom1))
-    (snatToNum (clockPeriod @dom2))
+    (clockPeriod @dom1)
+    (clockPeriod @dom2)
 {-# INLINE unsafeSynchronizer #-}
 
 -- | Same as 'unsafeSynchronizer', but with manually supplied clock periods.
