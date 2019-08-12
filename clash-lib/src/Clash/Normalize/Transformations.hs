@@ -1017,14 +1017,95 @@ inlineSmall _ e = return e
 -- | Specialise functions on arguments which are constant, except when they
 -- are clock, reset generators.
 constantSpec :: HasCallStack => NormRewrite
-constantSpec ctx e@(App e1 e2)
-  | (Var {}, args) <- collectArgs e1
+constantSpec ctx@(TransformContext localScope _) e@(App e1 e2)
+  -- Constant specialize if e2 is a constant
+  | (Var f, args) <- {-trace "---------------" $ traceShow e2 $ traceShowId $-} collectArgs e1
   , (_, []) <- Either.partitionEithers args
-  , null $ Lens.toListOf termFreeTyVars e2
-  = do e2Speccable <- canConstantSpec e2
-       if e2Speccable then specializeNorm ctx e else return e
-constantSpec _ e = return e
+  , null (Lens.toListOf termFreeTyVars e2) = do
+   e2Speccable <- canConstantSpec e2
+   if e2Speccable then
+     -- e2 is fully speccable / constant
+     specializeNorm ctx e
+   else
+     -- e2 is not fully speccable / constant, but it might be partially constant
+     -- instead. For example, consider the following definition of 'f':
+     --
+     --   f ab =
+     --     let (a, _) = ab
+     --         (_, b) = ab
+     --     in  a + b + 3
+     --
+     -- When called as:
+     --
+     --   g a = f (a, 5)
+     --
+     -- Constant specialization won't trigger, as (5, b) isn't constant. However,
+     -- we could rewrite 'f' to 'fSpec':
+     --
+     --   fSpec a =
+     --     let (a, _) = (a, 5)
+     --         (_, b) = (a, 5)
+     --     in  a + b + 3
+     --
+     -- and then change 'g' to:
+     --
+     --   g' a = f a
+     --
+     -- allowing later transformations to, for example, constant fold 'b + 3'.
+     --
+     -- TODO: Handle recursive case, i.e., ((a, 5), c)
+     case collectArgs e2 of
+      (Data {}, conArgs) -> do
+        let conArgsTI = zip [(0::Int)..] (Either.lefts conArgs)
+        (speccable, _notSpeccable) <- partitionM (canConstantSpec . snd) conArgsTI
+        bodyMaybe <- fmap (lookupUniqMap (varName f)) $ Lens.use bindings
+        case (speccable, bodyMaybe) of
+          ((_:_), Just (fName0, _srcSpan, _inlineSpec, fBody0)) -> do
+            -- TODO: Determine if localScope/deShadowTerm is enough
+            let fBody1 = deShadowTerm localScope fBody0
+                fBody2 = replaceArg localScope fBody1 (length args) e2
 
+            case fBody2 of
+              Nothing -> pure e
+              Just fBody3 -> do
+                (_, fCall) <- liftBinding (fName0, fBody3)
+                -- While liftBinding generates a new binder (possibly) taking
+                -- a number of new arguments, these will already be applied. We
+                -- therefore only have to apply the original arguments again.
+                changed (foldl app fCall args)
+          _ ->
+            pure e
+      _ -> pure e
+
+ where
+  app :: Term -> Either Term Type -> Term
+  app f (Left t) = App f t
+  app f (Right t) = TyApp f t
+
+  replaceArg
+    :: InScopeSet
+    -> Term
+    -- ^ Function with argument
+    -> Int
+    -- ^ Argument number to remove (including type arguments)
+    -> Term
+    -- ^ Term to replace argument with
+    -> Maybe Term
+    -- ^ Function removed and replaced argument
+  replaceArg inScope (Lam var t) 0 repl =
+    -- Note that strictly we don't need the in scope set, as caller already used
+    -- deShadowTerm, but it safeguards against misuse.
+    Just (substTm "replaceArg" (extendIdSubst (mkSubst inScope) var repl) t)
+  replaceArg inScope (TyLam tyVar t) n repl =
+    TyLam tyVar <$> replaceArg inScope t (n - 1) repl
+  replaceArg inScope (Lam var t) n repl =
+    Lam var <$> replaceArg (extendInScopeSet inScope var) t (n - 1) repl
+  replaceArg inScope (Tick info t) n repl =
+    Tick info <$> replaceArg inScope t n repl
+  replaceArg _inScope _t _n _repl =
+    Nothing
+
+constantSpec _ e = return e
 
 -- Experimental
 
