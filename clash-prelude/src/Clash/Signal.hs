@@ -67,6 +67,7 @@ Check out 'IntelSystem' and 'XilinxSystem' too!
 -}
 
 {-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE ExplicitNamespaces    #-}
 {-# LANGUAGE FlexibleContexts      #-}
@@ -83,6 +84,10 @@ Check out 'IntelSystem' and 'XilinxSystem' too!
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-}
 {-# OPTIONS_HADDOCK show-extensions #-}
+
+#ifndef CLASH_MULTIPLE_HIDDEN
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+#endif
 
 module Clash.Signal
   ( -- * Synchronous signals
@@ -131,8 +136,10 @@ module Clash.Signal
   , Clock
   , periodToHz
   , hzToPeriod
+#ifdef CLASH_MULTIPLE_HIDDEN
     -- ** Synchronization primitive
   , unsafeSynchronizer
+#endif
     -- * Reset
   , Reset(..)
   , unsafeToReset
@@ -141,7 +148,9 @@ module Clash.Signal
   , unsafeToLowPolarity
   , unsafeFromHighPolarity
   , unsafeFromLowPolarity
+#ifdef CLASH_MULTIPLE_HIDDEN
   , convertReset
+#endif
   , E.resetSynchronizer
   , holdReset
     -- ** Enabling
@@ -156,9 +165,11 @@ module Clash.Signal
   , HiddenClock
   , hideClock
   , exposeClock
-  , exposeSpecificClock
   , withClock
+#ifdef CLASH_MULTIPLE_HIDDEN
+  , exposeSpecificClock
   , withSpecificClock
+#endif
   , hasClock
     -- ** Hidden reset
   , HiddenReset
@@ -172,17 +183,21 @@ module Clash.Signal
   , HiddenEnable
   , hideEnable
   , exposeEnable
-  , exposeSpecificEnable
   , withEnable
+#ifdef CLASH_MULTIPLE_HIDDEN
+  , exposeSpecificEnable
   , withSpecificEnable
+#endif
   , hasEnable
     -- ** Hidden clock, reset, and enable
   , HiddenClockResetEnable
   , hideClockResetEnable
   , exposeClockResetEnable
-  , exposeSpecificClockResetEnable
   , withClockResetEnable
+#ifdef CLASH_MULTIPLE_HIDDEN
+  , exposeSpecificClockResetEnable
   , withSpecificClockResetEnable
+#endif
   , SystemClockResetEnable
     -- * Basic circuit functions
   , dflipflop
@@ -398,9 +413,15 @@ topEntity2 clk rst =
 
 -}
 
-type HiddenClockName dom = AppendSymbol dom "_clk"
-type HiddenResetName dom = AppendSymbol dom "_rst"
-type HiddenEnableName dom = AppendSymbol dom "_en"
+#ifdef CLASH_MULTIPLE_HIDDEN
+type HiddenClockName (dom :: Domain) = AppendSymbol dom "_clk"
+type HiddenResetName (dom :: Domain) = AppendSymbol dom "_rst"
+type HiddenEnableName (dom :: Domain) = AppendSymbol dom "_en"
+#else
+type HiddenClockName (dom :: Domain) = "clk"
+type HiddenResetName (dom :: Domain) = "rst"
+type HiddenEnableName (dom :: Domain) = "en"
+#endif
 
 -- | A /constraint/ that indicates the component has a hidden 'Clock'
 --
@@ -1731,6 +1752,7 @@ testFor
   -> Property
 testFor n s = property (and (Clash.Signal.sampleN n s))
 
+#ifdef CLASH_MULTIPLE_HIDDEN
 -- ** Synchronization primitive
 -- | Implicit version of 'Clash.Explicit.Signal.unsafeSynchronizer'.
 unsafeSynchronizer
@@ -1741,6 +1763,7 @@ unsafeSynchronizer
   -> Signal dom2 a
 unsafeSynchronizer =
   hideClock (hideClock S.unsafeSynchronizer)
+#endif
 
 -- | Hold reset for a number of cycles relative to an implicit reset signal.
 --
@@ -1779,6 +1802,7 @@ fromListWithReset
 fromListWithReset = hideReset E.fromListWithReset
 {-# INLINE fromListWithReset #-}
 
+#ifdef CLASH_MULTIPLE_HIDDEN
 -- | Convert between different types of reset, adding a synchronizer in case
 -- it needs to convert from an asynchronous to a synchronous reset.
 convertReset
@@ -1790,3 +1814,4 @@ convertReset
   -> Reset domB
 convertReset =
   E.convertReset hasClock hasClock
+#endif

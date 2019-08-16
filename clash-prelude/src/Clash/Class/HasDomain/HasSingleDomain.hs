@@ -101,8 +101,12 @@ type StuckErrorMsg (orig :: Type) (n :: Type) =
 -- contain a domain. If given a polymorphic domain not tied to /r/, GHC will
 -- be allowed to infer that that domain is equal to the one in /r/ on the
 -- condition that /r/ contains just a single domain.
+#ifdef CLASH_MULTIPLE_HIDDEN
 type WithSingleDomain dom r =
   (HasSingleDomain r, dom ~ GetDomain r)
+#else
+type WithSingleDomain dom r = HasSingleDomain r
+#endif
 
 data TryDomainResult
   = NotFound
@@ -171,6 +175,7 @@ type instance TryDomain t (Either a b)          = Merge t a b
 -- associated type, GetDomain, will yield a type error if that doesn't hold OR
 -- if it can't check it.
 class HasSingleDomain (r :: Type) where
+#ifdef CLASH_MULTIPLE_HIDDEN
   type GetDomain r :: Domain
   type GetDomain r =
     -- Handle types not in TryDomain type family
@@ -178,6 +183,7 @@ class HasSingleDomain (r :: Type) where
       (TryDomain r r)
       (DelayError (StuckErrorMsg r r))
       (Pure (ErrOnConflict r (TryDomain r r)))
+#endif
 
 instance HasSingleDomain a
 
